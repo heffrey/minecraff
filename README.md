@@ -2,7 +2,10 @@
 
 A fun 2D browser-based adventure game featuring Alex and Steve, inspired by classic 8-bit games. Chop down trees, collect resources, and explore the world!
 
-![Game Screenshot](https://via.placeholder.com/800x600/87CEEB/000000?text=Minecraff+Game)
+<img width="844" height="623" alt="image" src="https://github.com/user-attachments/assets/53ec0348-1967-49cc-b8fa-369e9bb1c839" />
+
+<img width="847" height="630" alt="image" src="https://github.com/user-attachments/assets/7252f187-13c3-4c62-a1c3-e98da3ca42d0" />
+
 
 ## Features
 
