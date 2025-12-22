@@ -1,0 +1,30 @@
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+
+# Editor directories and files
+.cursor/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+debug.log
+
+# Temporary files
+*.tmp
+*.temp
+
+# Node modules (if you add npm packages later)
+node_modules/
+
+# Build outputs (if you add a build process)
+dist/
+build/
+
