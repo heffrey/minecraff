@@ -6,6 +6,7 @@
 .Trashes
 
 # Editor directories and files
+.cursor
 .cursor/
 .vscode/
 .idea/
