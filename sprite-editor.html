@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sprite Sheet Editor & Diagnostic Tool</title>
+    <link rel="stylesheet" href="sprite-editor.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Sprite Sheet Editor & Diagnostic Tool</h1>
+            <p>Adjust sprite sheet parameters and map animation frames</p>
+        </header>
+
+        <div class="main-content">
+            <!-- Left Panel: Controls -->
+            <div class="controls-panel">
+                <div class="section">
+                    <h2>Load Sprite Sheet</h2>
+                    <select id="spriteSelect" class="sprite-select">
+                        <option value="">Select a sprite sheet...</option>
+                        <option value="steve.png">Steve</option>
+                        <option value="alex.png">Alex</option>
+                        <option value="inventory.png">Inventory Items</option>
+                        <option value="trees.png">Trees & Shrubs</option>
+                        <option value="Gemini_Generated_Image_9gdp3p9gdp3p9gdp.png">Extra</option>
+                    </select>
+                </div>
+
+                <div class="section">
+                    <h2>Sprite Sheet Parameters</h2>
+                    <div class="input-group">
+                        <label>Frame Width:</label>
+                        <input type="number" id="frameWidth" value="32" min="1" step="1">
+                    </div>
+                    <div class="input-group">
+                        <label>Frame Height:</label>
+                        <input type="number" id="frameHeight" value="32" min="1" step="1">
+                    </div>
+                    <div class="input-group">
+                        <label>Columns:</label>
+                        <input type="number" id="cols" value="4" min="1" step="1">
+                    </div>
+                    <div class="input-group">
+                        <label>Rows:</label>
+                        <input type="number" id="rows" value="4" min="1" step="1">
+                    </div>
+                    <div class="input-group">
+                        <label>Scale (Display):</label>
+                        <input type="number" id="displayScale" value="4" min="1" max="10" step="1">
+                    </div>
+                    <button id="updateParams" class="btn btn-primary">Update Parameters</button>
+                </div>
+
+                <div class="section">
+                    <h2>Image Info</h2>
+                    <div id="imageInfo" class="info-box">
+                        <p>No image loaded</p>
+                    </div>
+                </div>
+
+                <div class="section" id="animationMappingsSection">
+                    <h2>Animation Frame Mapping</h2>
+                    <div id="animationMappings">
+                        <div class="mapping-group">
+                            <label>Idle:</label>
+                            <input type="text" id="idleFrames" value="0" placeholder="e.g., 0 or 0,1,2">
+                        </div>
+                        <div class="mapping-group">
+                            <label>Walk:</label>
+                            <input type="text" id="walkFrames" value="1" placeholder="e.g., 1,2,3,4">
+                        </div>
+                        <div class="mapping-group">
+                            <label>Jump:</label>
+                            <input type="text" id="jumpFrames" value="10" placeholder="e.g., 10">
+                        </div>
+                        <div class="mapping-group">
+                            <label>Mine:</label>
+                            <input type="text" id="mineFrames" value="8,9" placeholder="e.g., 8,9">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="section" id="objectMappingsSection" style="display: none;">
+                    <h2>Object Frame Mapping</h2>
+                    <p style="font-size: 12px; color: #666; margin-bottom: 10px;">Click a frame below, then click an object name to map it</p>
+                    
+                    <div class="mapping-category" id="inventoryCategory" style="display: none;">
+                        <h3>Inventory Items</h3>
+                        <div id="inventoryMappings" class="object-mappings">
+                            <div class="mapping-group">
+                                <label>Dirt:</label>
+                                <input type="text" id="dirtFrame" value="" placeholder="Frame #" readonly>
+                            </div>
+                            <div class="mapping-group">
+                                <label>Stone:</label>
+                                <input type="text" id="stoneFrame" value="" placeholder="Frame #" readonly>
+                            </div>
+                            <div class="mapping-group">
+                                <label>Clay:</label>
+                                <input type="text" id="clayFrame" value="" placeholder="Frame #" readonly>
+                            </div>
+                            <div class="mapping-group">
+                                <label>Wood:</label>
+                                <input type="text" id="woodFrame" value="" placeholder="Frame #" readonly>
+                            </div>
+                            <div class="mapping-group">
+                                <label>Gold:</label>
+                                <input type="text" id="goldFrame" value="" placeholder="Frame #" readonly>
+                            </div>
+                            <div class="mapping-group">
+                                <label>Iron:</label>
+                                <input type="text" id="ironFrame" value="" placeholder="Frame #" readonly>
+                            </div>
+                            <div class="mapping-group">
+                                <label>Silver:</label>
+                                <input type="text" id="silverFrame" value="" placeholder="Frame #" readonly>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="mapping-category" id="shrubsCategory" style="display: none;">
+                        <h3>Shrubs</h3>
+                        <div id="shrubMappings" class="object-mappings">
+                            <div class="mapping-group">
+                                <label>Shrub 1:</label>
+                                <input type="text" id="shrub1Frame" value="" placeholder="Frame #" readonly>
+                            </div>
+                            <div class="mapping-group">
+                                <label>Shrub 2:</label>
+                                <input type="text" id="shrub2Frame" value="" placeholder="Frame #" readonly>
+                            </div>
+                            <div class="mapping-group">
+                                <label>Shrub 3:</label>
+                                <input type="text" id="shrub3Frame" value="" placeholder="Frame #" readonly>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="mapping-category" id="treesCategory" style="display: none;">
+                        <h3>Trees</h3>
+                        <div id="treeMappings" class="object-mappings">
+                            <div class="mapping-group">
+                                <label>Small:</label>
+                                <input type="text" id="treeSmallFrame" value="" placeholder="Frame #" readonly>
+                            </div>
+                            <div class="mapping-group">
+                                <label>Medium:</label>
+                                <input type="text" id="treeMediumFrame" value="" placeholder="Frame #" readonly>
+                            </div>
+                            <div class="mapping-group">
+                                <label>Medium 2:</label>
+                                <input type="text" id="treeMedium2Frame" value="" placeholder="Frame #" readonly>
+                            </div>
+                            <div class="mapping-group">
+                                <label>Large:</label>
+                                <input type="text" id="treeLargeFrame" value="" placeholder="Frame #" readonly>
+                            </div>
+                            <div class="mapping-group">
+                                <label>Dead:</label>
+                                <input type="text" id="treeDeadFrame" value="" placeholder="Frame #" readonly>
+                            </div>
+                            <div class="mapping-group">
+                                <label>Blossom 1:</label>
+                                <input type="text" id="blossom1Frame" value="" placeholder="Frame #" readonly>
+                            </div>
+                            <div class="mapping-group">
+                                <label>Blossom 2:</label>
+                                <input type="text" id="blossom2Frame" value="" placeholder="Frame #" readonly>
+                            </div>
+                            <div class="mapping-group">
+                                <label>Blossom 3:</label>
+                                <input type="text" id="blossom3Frame" value="" placeholder="Frame #" readonly>
+                            </div>
+                            <div class="mapping-group">
+                                <label>Blossom 4:</label>
+                                <input type="text" id="blossom4Frame" value="" placeholder="Frame #" readonly>
+                            </div>
+                            <div class="mapping-group">
+                                <label>Stump:</label>
+                                <input type="text" id="stumpFrame" value="" placeholder="Frame #" readonly>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <h2>Export Configuration</h2>
+                    <div class="input-group" id="characterNameGroup">
+                        <label>Character Name:</label>
+                        <input type="text" id="characterName" value="steve" placeholder="steve or alex">
+                    </div>
+                    <div class="input-group" id="objectNameGroup" style="display: none;">
+                        <label>Object Name:</label>
+                        <input type="text" id="objectName" value="trees" placeholder="trees">
+                    </div>
+                    <button id="exportJson" class="btn btn-success">Export as JSON</button>
+                    <button id="copyJson" class="btn btn-secondary">Copy to Clipboard</button>
+                </div>
+            </div>
+
+            <!-- Right Panel: Visualization -->
+            <div class="visualization-panel">
+                <div class="section">
+                    <h2>Sprite Sheet Preview</h2>
+                    <div class="canvas-container">
+                        <canvas id="spriteCanvas"></canvas>
+                    </div>
+                    <div class="grid-overlay-info">
+                        <p>💡 Grid overlay shows frame boundaries. Scroll to see the full sprite sheet.</p>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <h2>Individual Frames</h2>
+                    <div id="framesGrid" class="frames-grid">
+                        <!-- Frames will be generated here -->
+                    </div>
+                </div>
+
+                <div class="section">
+                    <h2>Frame Selector</h2>
+                    <p>Click on a frame below to see its index and add it to animations</p>
+                    <div id="frameSelector" class="frame-selector">
+                        <!-- Frame selector will be generated here -->
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- JSON Output Modal -->
+        <div id="jsonModal" class="modal">
+            <div class="modal-content">
+                <span class="close">&times;</span>
+                <h2>Exported Configuration JSON</h2>
+                <textarea id="jsonOutput" readonly></textarea>
+                <div class="modal-buttons">
+                    <button id="downloadJson" class="btn btn-success">Download JSON</button>
+                    <button id="closeModal" class="btn btn-secondary">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="sprite-editor.js"></script>
+</body>
+</html>
+
