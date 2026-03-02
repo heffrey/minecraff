@@ -3,6 +3,13 @@ const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 const loadingEl = document.getElementById('loading');
 
+// Mobile / Touch detection
+const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+
+// Prevent default touch behaviors on canvas (scrolling, zooming)
+canvas.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false });
+canvas.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+
 // Game State
 const game = {
     characters: [],
@@ -927,7 +934,10 @@ async function initGame() {
         
         // Hide loading
         loadingEl.classList.add('hidden');
-        
+
+        // Initialize touch controls for mobile
+        initTouchControls();
+
         // Start game loop
         gameLoop();
     } catch (error) {
@@ -974,44 +984,7 @@ document.addEventListener('keydown', (e) => {
     
     // Action key (E) - Start mining nearest tree (held down for continuous mining)
     if (e.key === 'e' || e.key === 'E') {
-        const steve = game.characters[0]; // Steve is the first character
-        if (!steve) return;
-        
-        // Find the nearest tree to Steve
-        let nearestTree = null;
-        let nearestDistance = Infinity;
-        let nearestTreeIndex = -1;
-        
-        for (let i = 0; i < game.trees.length; i++) {
-            const tree = game.trees[i];
-            if (steve.isNearTree(tree)) {
-                const steveCenterX = steve.x + steve.width / 2;
-                const steveCenterY = steve.y + steve.height / 2;
-                const treeBounds = tree.getBounds();
-                const treeCenterX = treeBounds.x + treeBounds.width / 2;
-                const treeCenterY = treeBounds.y + treeBounds.height / 2;
-                
-                const dx = steveCenterX - treeCenterX;
-                const dy = steveCenterY - treeCenterY;
-                const distance = Math.sqrt(dx * dx + dy * dy);
-                
-                if (distance < nearestDistance) {
-                    nearestDistance = distance;
-                    nearestTree = tree;
-                    nearestTreeIndex = i;
-                }
-            }
-        }
-        
-        if (nearestTree) {
-            // Start mining - set state and track target tree
-            game.mining.isMining = true;
-            game.mining.targetTreeIndex = nearestTreeIndex;
-            game.mining.lastHitTime = Date.now();
-            steve.state = 'mine';
-        } else {
-            console.log('No tree nearby. Get closer to a tree and press E to chop it.');
-        }
+        startMining();
     }
     
     // Toggle inventory display (I key)
@@ -1035,16 +1008,114 @@ document.addEventListener('keyup', (e) => {
     
     // Stop mining when E is released
     if (e.key === 'e' || e.key === 'E') {
-        const steve = game.characters[0];
-        if (steve && game.mining.isMining) {
-            game.mining.isMining = false;
-            game.mining.targetTreeIndex = -1;
-            if (steve.state === 'mine') {
-                steve.state = 'idle';
+        stopMining();
+    }
+});
+
+// Mining helpers (shared by keyboard and touch controls)
+function startMining() {
+    const steve = game.characters[0];
+    if (!steve) return;
+
+    let nearestTree = null;
+    let nearestDistance = Infinity;
+    let nearestTreeIndex = -1;
+
+    for (let i = 0; i < game.trees.length; i++) {
+        const tree = game.trees[i];
+        if (steve.isNearTree(tree)) {
+            const steveCenterX = steve.x + steve.width / 2;
+            const steveCenterY = steve.y + steve.height / 2;
+            const treeBounds = tree.getBounds();
+            const treeCenterX = treeBounds.x + treeBounds.width / 2;
+            const treeCenterY = treeBounds.y + treeBounds.height / 2;
+
+            const dx = steveCenterX - treeCenterX;
+            const dy = steveCenterY - treeCenterY;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+
+            if (distance < nearestDistance) {
+                nearestDistance = distance;
+                nearestTree = tree;
+                nearestTreeIndex = i;
             }
         }
     }
-});
+
+    if (nearestTree) {
+        game.mining.isMining = true;
+        game.mining.targetTreeIndex = nearestTreeIndex;
+        game.mining.lastHitTime = Date.now();
+        steve.state = 'mine';
+    }
+}
+
+function stopMining() {
+    const steve = game.characters[0];
+    if (steve && game.mining.isMining) {
+        game.mining.isMining = false;
+        game.mining.targetTreeIndex = -1;
+        if (steve.state === 'mine') {
+            steve.state = 'idle';
+        }
+    }
+}
+
+// Touch controls initialization
+function initTouchControls() {
+    if (!isTouchDevice) return;
+
+    const touchControls = document.getElementById('touchControls');
+    const keyboardControls = document.getElementById('keyboard-controls');
+
+    if (touchControls) touchControls.classList.add('visible');
+    if (keyboardControls) keyboardControls.style.display = 'none';
+
+    const btnLeft = document.getElementById('btn-left');
+    const btnRight = document.getElementById('btn-right');
+    const btnJump = document.getElementById('btn-jump');
+    const btnChop = document.getElementById('btn-chop');
+
+    function addTouchHandler(btn, onStart, onEnd) {
+        if (!btn) return;
+        btn.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            onStart();
+        }, { passive: false });
+        btn.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            if (onEnd) onEnd();
+        }, { passive: false });
+        btn.addEventListener('touchcancel', (e) => {
+            if (onEnd) onEnd();
+        });
+    }
+
+    addTouchHandler(btnLeft,
+        () => { const s = game.characters[0]; if (s) s.moveLeft(); },
+        () => { const s = game.characters[0]; if (s) s.stop(); }
+    );
+
+    addTouchHandler(btnRight,
+        () => { const s = game.characters[0]; if (s) s.moveRight(); },
+        () => { const s = game.characters[0]; if (s) s.stop(); }
+    );
+
+    addTouchHandler(btnJump,
+        () => { const s = game.characters[0]; if (s) s.jump(); },
+        null
+    );
+
+    addTouchHandler(btnChop,
+        () => { game.keys['e'] = true; startMining(); },
+        () => { game.keys['e'] = false; game.keys['E'] = false; stopMining(); }
+    );
+
+    // Prevent context menu on long-press
+    if (touchControls) {
+        touchControls.addEventListener('contextmenu', (e) => e.preventDefault());
+    }
+}
 
 // Draw inventory UI
 function drawInventory(ctx) {
@@ -1260,8 +1331,9 @@ function gameLoop() {
             ctx.textAlign = 'center';
             const textX = bounds.x + bounds.width / 2;
             const textY = bounds.y - 20;
-            ctx.strokeText('Press E to chop', textX, textY);
-            ctx.fillText('Press E to chop', textX, textY);
+            const chopHint = isTouchDevice ? 'Tap E to chop' : 'Press E to chop';
+            ctx.strokeText(chopHint, textX, textY);
+            ctx.fillText(chopHint, textX, textY);
         }
     });
     
