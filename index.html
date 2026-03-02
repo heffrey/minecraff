@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Alex & Steve - 8-bit Game</title>
     <link rel="stylesheet" href="style.css">
 </head>
@@ -10,7 +10,7 @@
     <div class="container">
         <header>
             <h1>Alex & Steve - 8-bit Adventure</h1>
-            <div class="controls-info">
+            <div class="controls-info" id="keyboard-controls">
                 <p><strong>Steve:</strong> Arrow Keys to move, Space/Up to jump</p>
                 <p><strong>Alex:</strong> A/D to move, W to jump</p>
                 <p><strong>Action:</strong> Press 'E' near trees to chop them</p>
@@ -19,6 +19,16 @@
         </header>
         <div class="game-wrapper">
             <canvas id="gameCanvas" width="800" height="600"></canvas>
+            <div id="touchControls" class="touch-controls">
+                <div class="touch-controls-left">
+                    <button id="btn-left" class="touch-btn" aria-label="Move left">&#9664;</button>
+                    <button id="btn-right" class="touch-btn" aria-label="Move right">&#9654;</button>
+                </div>
+                <div class="touch-controls-right">
+                    <button id="btn-chop" class="touch-btn touch-btn-action" aria-label="Chop">E</button>
+                    <button id="btn-jump" class="touch-btn touch-btn-action" aria-label="Jump">&#9650;</button>
+                </div>
+            </div>
         </div>
         <div class="loading" id="loading">
             <p>Loading sprite sheets...</p>
