@@ -1,0 +1,27 @@
+{
+  "objectName": "trees",
+  "spriteSheet": "trees.png",
+  "frameWidth": 194,
+  "frameHeight": 260,
+  "cols": 5,
+  "rows": 4,
+  "objectMappings": {
+    "shrubs": {
+      "shrub1": 2,
+      "shrub2": 3,
+      "shrub3": 4
+    },
+    "trees": {
+      "small": 5,
+      "medium": 7,
+      "medium2": 8,
+      "large": 9,
+      "dead": 6,
+      "blossom1": 10,
+      "blossom2": 11,
+      "blossom3": 12,
+      "blossom4": 13,
+      "stump": 14
+    }
+  }
+}
