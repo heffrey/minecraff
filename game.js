@@ -712,8 +712,9 @@ class Character {
             feetAlignOffset = (idleFeetInFrame - currentFeetInFrame) * this.scale;
         }
 
-        // Apply a small downward offset for Alex when idle
-        // Apply a -2px Y offset for both characters when moving
+        // Apply a small downward offset to correct for semi-transparent pixels at the
+        // bottom of each character's idle frame that the alpha detector picks up but
+        // aren't visually meaningful (they push the sprite above the ground line).
         const idleYOffset = this.name === 'Alex' ? (this.velocityX !== 0 ? 4 : 3) : 0;
 
         const drawY = screenY + idleYOffset + feetAlignOffset;
@@ -1646,10 +1647,24 @@ class Tree {
         
         // Ensure frame index is valid
         if (this.frameIndex >= 0 && this.frameIndex < this.spriteSheet.totalFrames) {
-            this.spriteSheet.drawFrame(ctx, this.frameIndex, screenX, screenY, this.scale);
+            const frameBounds = this.spriteSheet.frameBounds[this.frameIndex];
+            if (frameBounds) {
+                // Draw only the frameBounds content region, clipping transparent/unwanted areas
+                const col = this.frameIndex % this.spriteSheet.cols;
+                const row = Math.floor(this.frameIndex / this.spriteSheet.cols);
+                const sx = col * this.spriteSheet.frameWidth + frameBounds.offsetX;
+                const sy = row * this.spriteSheet.frameHeight + frameBounds.offsetY;
+                ctx.drawImage(
+                    this.spriteSheet.image,
+                    sx, sy, frameBounds.width, frameBounds.height,
+                    screenX + frameBounds.offsetX * this.scale, screenY + frameBounds.offsetY * this.scale,
+                    frameBounds.width * this.scale, frameBounds.height * this.scale
+                );
+            } else {
+                this.spriteSheet.drawFrame(ctx, this.frameIndex, screenX, screenY, this.scale);
+            }
         } else {
             console.warn(`Invalid frame index ${this.frameIndex} for tree (max: ${this.spriteSheet.totalFrames - 1})`);
-            // Draw a placeholder rectangle if frame is invalid
             ctx.fillStyle = 'rgba(255, 0, 0, 0.5)';
             ctx.fillRect(screenX, screenY, this.width, this.height);
         }
@@ -1916,7 +1931,7 @@ async function initGame() {
             const pigRowIndex = 5; // Pigs are in row 5 (0-indexed)
             const cols = game.spriteSheets.mobs.cols;
             const topBorderAdjustment = 5; // Move top border up by 5 pixels
-            
+
             // Adjust all pig frames (all columns in row 5)
             for (let col = 0; col < cols; col++) {
                 const pigFrameIndex = pigRowIndex * cols + col;
@@ -1931,6 +1946,34 @@ async function initGame() {
             
         }
         
+        // Apply per-frame bounds overrides from trees config
+        if (game.spriteSheets.trees) {
+            if (treesConfig?.frameWidthOverrides) {
+                for (const [frameIndex, width] of Object.entries(treesConfig.frameWidthOverrides)) {
+                    const idx = parseInt(frameIndex);
+                    if (game.spriteSheets.trees.frameBounds[idx]) {
+                        game.spriteSheets.trees.frameBounds[idx].width = width;
+                    }
+                }
+            }
+            if (treesConfig?.frameHeightOverrides) {
+                for (const [frameIndex, height] of Object.entries(treesConfig.frameHeightOverrides)) {
+                    const idx = parseInt(frameIndex);
+                    if (game.spriteSheets.trees.frameBounds[idx]) {
+                        game.spriteSheets.trees.frameBounds[idx].height = height;
+                    }
+                }
+            }
+            if (treesConfig?.frameOffsetYOverrides) {
+                for (const [frameIndex, offsetY] of Object.entries(treesConfig.frameOffsetYOverrides)) {
+                    const idx = parseInt(frameIndex);
+                    if (game.spriteSheets.trees.frameBounds[idx]) {
+                        game.spriteSheets.trees.frameBounds[idx].offsetY = offsetY;
+                    }
+                }
+            }
+        }
+
         // Store mappings for later use
         if (inventoryMappings) {
             game.inventoryMappings = inventoryMappings;
@@ -2836,13 +2879,11 @@ function gameLoop(timestamp) {
         spawnTreesInArea(spawnStartX, spawnEndX, worldGroundY);
     }
     
-    // Get current biome and blend based on camera/player position.
-    // Note: currentBiome follows biomeBlend.fromBiome, so biome-change events
-    // (e.g. cave spider spawns) fire at the leading edge of transition zones,
-    // not at the exact biome boundary.
     const playerX = game.camera.x + canvas.width / 2;
     const biomeBlend = getBiomeBlend(playerX);
-    const currentBiome = biomeBlend.fromBiome;
+    // Use the sharp biome boundary for game logic (mob spawning, event triggers).
+    // The blended fromBiome would fire cave events 75 units before the actual cave edge.
+    const currentBiome = getBiome(playerX);
     const biomeColors = getBlendedBiomeColors(biomeBlend);
 
     // Detect biome change for cave spider spawning

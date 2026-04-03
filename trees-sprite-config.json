@@ -5,6 +5,23 @@
   "frameHeight": 260,
   "cols": 5,
   "rows": 4,
+  "frameWidthOverrides": {
+    "6": 123
+  },
+  "frameHeightOverrides": {
+    "10": 173,
+    "11": 163,
+    "12": 168,
+    "13": 171,
+    "14": 124
+  },
+  "frameOffsetYOverrides": {
+    "10": 64,
+    "11": 74,
+    "12": 69,
+    "13": 66,
+    "14": 113
+  },
   "objectMappings": {
     "shrubs": {
       "shrub1": 2,

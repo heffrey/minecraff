@@ -45,6 +45,25 @@ Spawned by `spawnHostileMob(type, options)`. Cap: 8 hostile (non-spider) + 4 spi
 
 Use `.worktrees/` for feature branches. It is gitignored. When working in a worktree, copy the current `game.js` from main before branching if it has uncommitted changes — the worktree branches from the last commit, not the working tree.
 
+## Sprite Frame Bounds
+
+`SpriteSheet.analyzeFrameAlpha(frameIndex)` scans pixels to find the bounding box of non-transparent content and caches it in `spriteSheet.frameBounds[idx]`. The result has `{offsetX, offsetY, width, height}` where `offsetY` is the first non-transparent row from the frame top.
+
+**Critical gotcha — bounding box vs. visual content:** The alpha analysis returns the bounding box of ALL non-transparent pixels across a frame. For blossom trees (frames 10-13), the sprite has a small trunk stub at the top (rows 0-17), a fully transparent gap (~50 rows), then the canopy. The bounding box spans from the stub top to canopy bottom, so `offsetY=0` and `height=237` — but drawing the full frame renders the trunk floating visibly above the canopy.
+
+**How to override:** `trees-sprite-config.json` supports `frameHeightOverrides` and `frameOffsetYOverrides` keyed by frame index (string). These are applied to `frameBounds` after `analyzeAllFrames()` completes in the post-load code (`initGame`). `Tree.draw()` uses frameBounds for a clipped `drawImage` — it draws only from `offsetY` to `offsetY+height` in the source frame, so overriding `offsetY` to skip past a trunk stub actually hides it visually.
+
+**To diagnose a new frame's layout:** Use browser console to scan row widths:
+```js
+const ss = game.spriteSheets.trees, fi = 11;
+// ... rowWidths = pixel count per row, find stubEnd / canopyStart / canopyEnd
+```
+Typical blossom frame structure: stub (0-17), gap (18-64/74), canopy (64/74-236). Set `offsetY = canopyStart`, `height = canopyEnd - canopyStart + 1`.
+
+**`drawFrame` does NOT clip** — it always draws the full `frameWidth × frameHeight`. Only `Tree.draw()` uses the clipped path via frameBounds (both X and Y). Character drawing uses a different system (feetAlignOffset + idleYOffset).
+
+**Sprite sheet bleed:** Frames at the right edge of their column can have semi-transparent pixels from the adjacent frame bleeding in. Alpha threshold is 10, so alpha=16 pixels ARE detected. Frame 6 (dead tree) has green bleed from frame 7 at columns 188-193 — fixed via `frameWidthOverrides: {"6": 123}` in the JSON. When a frame shows a "slice of another tree", check the rightmost columns for off-color pixels and add a width override.
+
 ## Gotchas
 
 - `gameLoop()` must be called via `requestAnimationFrame(gameLoop)`, never directly — a direct call passes `undefined` as `timestamp`, causing NaN cascade in delta-time and day/night.
