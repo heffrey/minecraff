@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a 10-minute day/night cycle with phase-based sky colors, stars/moon at night, a swamp biome, and hostile mobs that spawn at night and burn at dawn.
+**Goal:** Add a 10-minute day/night cycle with phase-based sky colors, stars/moon at night, swamp and cave biomes, and hostile mobs that spawn by biome/phase — burning at dawn except spiders (cave-only, permanent).
 
-**Architecture:** A `dayNight` object on `game` tracks elapsed time and current phase (DAY/EVENING/NIGHT/DAWN). Sky color lerps between biome day/night keyframes each frame. Phase transitions trigger mob spawning (EVENING→NIGHT) and burning (DAWN→DAY). All changes are in `game.js`.
+**Architecture:** A `dayNight` object on `game` tracks elapsed time and current phase (DAY/EVENING/NIGHT/DAWN). Sky color lerps between biome day/night keyframes each frame. Phase transitions trigger mob spawning/burning. A `prevBiome` tracker fires spider spawning when the player enters the cave biome. All changes are in `game.js`.
 
 **Tech Stack:** Vanilla JS, HTML5 Canvas. No test framework — verification is via browser console + visual check.
 
@@ -14,15 +14,16 @@
 
 | File | Change |
 |------|--------|
-| `game.js:7-51` | Add `dayNight` to `game` state object |
-| `game.js:1188-1228` | Add `hostile`, `burning`, `burnStart` to `Mob` constructor |
+| `game.js:7-51` | Add `dayNight` and `prevBiome` to `game` state object |
+| `game.js:1188-1228` | Add `hostile`, `burning`, `burnStart`, `burnsAtDawn` to `Mob` constructor |
 | `game.js:1257-1310` | Add burn timer logic to `Mob.update()` |
 | `game.js:1312-1349` | Add red flash to `Mob.draw()` |
-| `game.js:2022-2067` | Remove hostile mobs from initial spawn |
-| `game.js:2486-2520` | Add swamp to `getBiome()` + `nightSky` to `getBiomeColors()` |
-| `game.js:2578-2582` | Add star positions array before `gameLoop` |
+| `game.js:2022-2067` | Keep only pigs in initial spawn; remove spiders |
+| `game.js:2486-2520` | Add cave + swamp to `getBiome()`, add `nightSky` to all biomes in `getBiomeColors()` |
+| `game.js:2578` | Add `lerpColor`, star positions, `spawnHostileMob` before `gameLoop` |
 | `game.js:2582` | Add `timestamp` param to `gameLoop`, compute `deltaMs` |
 | `game.js:2633-2639` | Replace sky fill with lerped color + draw stars/moon |
+| `game.js` (inside loop) | Add phase transition + biome transition handlers |
 
 ---
 
@@ -32,9 +33,9 @@
 - Modify: `game.js:7-51` (game state object)
 - Modify: `game.js:2582` (gameLoop signature)
 
-- [ ] **Step 1: Add `dayNight` to game state**
+- [ ] **Step 1: Add `dayNight` and `prevBiome` to game state**
 
-In `game.js`, find the `game` object (starts at line 7). Add `dayNight` as the last property before the closing `};`:
+In `game.js`, find the `game` object (starts at line 7). Add these as the last two properties before the closing `};`:
 
 ```js
     dayNight: {
@@ -42,7 +43,8 @@ In `game.js`, find the `game` object (starts at line 7). Add `dayNight` as the l
         elapsed: 0,            // ms elapsed in current cycle
         cycleDuration: 600000, // 10 minutes
         lastTimestamp: null    // for delta time
-    }
+    },
+    prevBiome: null            // tracks biome changes for cave spider spawning
 ```
 
 - [ ] **Step 2: Accept timestamp in gameLoop and compute delta**
@@ -87,7 +89,7 @@ Open `http://localhost:8080`. Open DevTools console and run:
 ```js
 setInterval(() => console.log(game.dayNight.phase, game.dayNight.elapsed.toFixed(0)), 2000);
 ```
-Expected: phase prints as `DAY` and elapsed increases. No errors.
+Expected: phase prints as `DAY` and elapsed increases by ~2000ms each log. No errors.
 
 - [ ] **Step 5: Commit**
 
@@ -98,35 +100,39 @@ git commit -m "feat: add dayNight state and delta time to game loop"
 
 ---
 
-### Task 2: Add swamp biome and night sky colors
+### Task 2: Add cave and swamp biomes with night sky colors
 
 **Files:**
 - Modify: `game.js:2486-2520` (`getBiome` and `getBiomeColors`)
 
-- [ ] **Step 1: Update `getBiome()` to add swamp**
+- [ ] **Step 1: Update `getBiome()` to include cave and swamp**
 
 Replace the `getBiome` function (currently at ~line 2486) with:
 
 ```js
 function getBiome(worldX) {
-    const sandBiomeStart  = 2000;
-    const swampBiomeStart = 3000;
-    const snowBiomeStart  = 4000;
-
-    if (worldX >= snowBiomeStart)  return 'snow';
-    if (worldX >= swampBiomeStart) return 'swamp';
-    if (worldX >= sandBiomeStart)  return 'sand';
+    if (worldX < -1000)        return 'cave';
+    if (worldX >= 4000)        return 'snow';
+    if (worldX >= 3000)        return 'swamp';
+    if (worldX >= 2000)        return 'sand';
     return 'default';
 }
 ```
 
-- [ ] **Step 2: Update `getBiomeColors()` to add nightSky and swamp**
+- [ ] **Step 2: Update `getBiomeColors()` to add cave, swamp, and nightSky**
 
 Replace the `getBiomeColors` function (currently at ~line 2500) with:
 
 ```js
 function getBiomeColors(biome) {
     switch (biome) {
+        case 'cave':
+            return {
+                sky: '#1a1a1a',
+                nightSky: '#0a0a0a',
+                ground: '#2a2a2a',
+                grass: '#3a3a3a'
+            };
         case 'sand':
             return {
                 sky: '#FFE4B5',
@@ -161,13 +167,13 @@ function getBiomeColors(biome) {
 
 - [ ] **Step 3: Verify in browser**
 
-Walk Steve right until the ground turns dark green (swamp, ~x=3000 world units). The sky should be murky green. No console errors.
+Walk Steve left past x = -1000 (use debug mode `B` to see position, or watch sky turn near-black). Walk right to x = 3000 — sky should turn murky green. No console errors.
 
 - [ ] **Step 4: Commit**
 
 ```bash
 git add game.js
-git commit -m "feat: add swamp biome and nightSky colors to all biomes"
+git commit -m "feat: add cave and swamp biomes with nightSky colors"
 ```
 
 ---
@@ -195,10 +201,10 @@ function lerpColor(a, b, t) {
     return `#${((rr << 16) | (rg << 8) | rb).toString(16).padStart(6, '0')}`;
 }
 
-// Pre-generate star positions (seeded so they don't move frame-to-frame)
+// Pre-generate star positions (deterministic so they don't move frame-to-frame)
 const STARS = Array.from({ length: 25 }, (_, i) => ({
-    x: ((i * 137 + 53) % 97) / 97,   // deterministic spread 0–1
-    y: ((i * 79  + 17) % 61) / 61 * 0.7, // top 70% of sky
+    x: ((i * 137 + 53) % 97) / 97,
+    y: ((i * 79  + 17) % 61) / 61 * 0.7,
     r: (i % 3 === 0) ? 1.5 : 1
 }));
 ```
@@ -228,33 +234,25 @@ Replace it with:
     const SUNSET_COLOR = '#e85d3a';
     let skyColor;
     if (cyclePos < 0.40) {
-        // Full day
         skyColor = biomeColors.sky;
     } else if (cyclePos < 0.55) {
-        // DAY → EVENING: lerp day→sunset first half, sunset→night second half
-        const t = (cyclePos - 0.40) / 0.15; // 0→1 across evening
-        if (t < 0.5) {
-            skyColor = lerpColor(biomeColors.sky, SUNSET_COLOR, t * 2);
-        } else {
-            skyColor = lerpColor(SUNSET_COLOR, biomeColors.nightSky, (t - 0.5) * 2);
-        }
+        const t = (cyclePos - 0.40) / 0.15;
+        skyColor = t < 0.5
+            ? lerpColor(biomeColors.sky, SUNSET_COLOR, t * 2)
+            : lerpColor(SUNSET_COLOR, biomeColors.nightSky, (t - 0.5) * 2);
     } else if (cyclePos < 0.75) {
-        // Full night
         skyColor = biomeColors.nightSky;
     } else {
-        // DAWN: lerp night→sunset first half, sunset→day second half
-        const t = (cyclePos - 0.75) / 0.25; // 0→1 across dawn
-        if (t < 0.5) {
-            skyColor = lerpColor(biomeColors.nightSky, SUNSET_COLOR, t * 2);
-        } else {
-            skyColor = lerpColor(SUNSET_COLOR, biomeColors.sky, (t - 0.5) * 2);
-        }
+        const t = (cyclePos - 0.75) / 0.25;
+        skyColor = t < 0.5
+            ? lerpColor(biomeColors.nightSky, SUNSET_COLOR, t * 2)
+            : lerpColor(SUNSET_COLOR, biomeColors.sky, (t - 0.5) * 2);
     }
 
     ctx.fillStyle = skyColor;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // Draw stars and moon during evening and night
+    // Stars and moon fade in during evening, stay through night, fade out at dawn
     const starAlpha = cyclePos >= 0.55 && cyclePos < 0.75 ? 1.0
         : cyclePos >= 0.40 && cyclePos < 0.55 ? (cyclePos - 0.40) / 0.15
         : cyclePos >= 0.75 && cyclePos < 0.875 ? 1.0 - (cyclePos - 0.75) / 0.125
@@ -263,7 +261,6 @@ Replace it with:
     if (starAlpha > 0) {
         ctx.save();
         ctx.globalAlpha = starAlpha;
-        // Stars
         ctx.fillStyle = '#ffffff';
         for (const star of STARS) {
             ctx.beginPath();
@@ -271,103 +268,111 @@ Replace it with:
             ctx.fill();
         }
         // Moon: glowing circle top-right
-        const moonX = canvas.width - 60;
-        const moonY = 40;
         ctx.shadowColor = '#fffde7';
         ctx.shadowBlur = 12;
         ctx.fillStyle = '#fffde7';
         ctx.beginPath();
-        ctx.arc(moonX, moonY, 14, 0, Math.PI * 2);
+        ctx.arc(canvas.width - 60, 40, 14, 0, Math.PI * 2);
         ctx.fill();
         ctx.shadowBlur = 0;
         ctx.restore();
     }
 ```
 
-- [ ] **Step 3: Verify in browser**
+- [ ] **Step 3: Verify visually in browser**
 
-Wait ~40 seconds (or temporarily set `cycleDuration: 60000` for testing), then watch the sky fade to sunset orange then dark blue. Stars and moon should appear. Set it back to `600000` after testing.
+Temporarily set `game.dayNight.cycleDuration = 60000` in the console. Watch the sky cycle through blue → orange → dark → orange → blue over 60 seconds. Stars and moon appear at night. Set back to `600000`. No console errors.
 
 - [ ] **Step 4: Commit**
 
 ```bash
 git add game.js
-git commit -m "feat: lerp sky color through day/night phases, draw stars and moon"
+git commit -m "feat: lerp sky through day/night phases, draw stars and moon"
 ```
 
 ---
 
-### Task 4: Add `hostile` flag to Mob, remove hostile mobs from initial spawn
+### Task 4: Add `hostile`/`burnsAtDawn` flags to Mob, slim down initial spawn
 
 **Files:**
 - Modify: `game.js:1188-1228` (Mob constructor)
-- Modify: `game.js:2022-2067` (initial mob spawn in init)
+- Modify: `game.js:2022-2067` (initial mob spawn)
 
-- [ ] **Step 1: Add `hostile` and burning flags to Mob constructor**
+- [ ] **Step 1: Add flags to Mob constructor**
 
 In the `Mob` constructor (line ~1228, after `this.lastStateChange = Date.now();`), add:
 
 ```js
-        // Day/night system
-        this.hostile = false;  // true = spawned by night system, burns at dawn
+        // Day/night + cave system
+        this.hostile = false;      // true = managed by spawn system
+        this.burnsAtDawn = true;   // false = survives dawn (e.g. spiders)
         this.burning = false;
         this.burnStart = 0;
+        this.burnedOut = false;
 ```
 
-- [ ] **Step 2: Remove hostile mob types from initial world spawn**
+- [ ] **Step 2: Keep only pigs in initial world spawn**
 
-Find the initial mob spawn block (~line 2022). Change the `mobTypes` array to only passive mobs:
+Find the initial mob spawn block (~line 2022). Change `mobTypes` to only pigs:
 
 ```js
-        // Create passive mobs in the world (hostile mobs spawn via day/night system)
+        // Create passive mobs in the world (all other mobs managed by biome/phase system)
         if (game.spriteSheets.mobs) {
             const worldGroundY = canvas.height - 50;
-            const mobTypes = ['spider', 'pig'];
+            const mobTypes = ['pig'];
             const mobs = [];
 ```
 
 - [ ] **Step 3: Verify in browser**
 
-Reload the game. Only spiders and pigs should be visible. No zombies, skeletons, creepers, or slimes on startup. Check DevTools console: no errors.
+Reload the game. Only pigs should be visible on startup. No zombies, skeletons, creepers, slimes, or spiders present. Console: `game.mobs.map(m => m.mobType)` → array of only `'pig'`.
 
 - [ ] **Step 4: Commit**
 
 ```bash
 git add game.js
-git commit -m "feat: add hostile/burning flags to Mob, remove hostile mobs from initial spawn"
+git commit -m "feat: add hostile/burnsAtDawn flags to Mob, initial spawn pigs only"
 ```
 
 ---
 
-### Task 5: Spawn night mobs on phase transitions
+### Task 5: Spawn hostile mobs on phase and biome transitions
 
 **Files:**
-- Modify: `game.js:2578` (add spawn helper functions before gameLoop)
-- Modify: `game.js` (inside gameLoop, after phaseChanged is set — add transition handlers)
+- Modify: `game.js:2578` (add `spawnHostileMob` before `gameLoop`)
+- Modify: `game.js` (phase transition block inside `gameLoop`)
 
 - [ ] **Step 1: Add `spawnHostileMob` helper before `gameLoop`**
 
-Add this function just before the `let lastAutoSave` line:
+Add just above the `let lastAutoSave` line:
 
 ```js
-function spawnHostileMob(mobType) {
+function spawnHostileMob(mobType, options = {}) {
     if (!game.spriteSheets.mobs) return;
-    if (game.mobs.filter(m => m.hostile).length >= 8) return; // cap
+
+    // Cap: spiders capped at 4, all other hostiles capped at 8
+    const isSpider = mobType === 'spider';
+    const hostileCount = game.mobs.filter(m => m.hostile && m.mobType !== 'spider').length;
+    const spiderCount  = game.mobs.filter(m => m.mobType === 'spider').length;
+    if (isSpider && spiderCount >= 4) return;
+    if (!isSpider && hostileCount >= 8) return;
 
     const worldGroundY = canvas.height - 50;
-    // Spawn off-screen left or right of camera
     const side = Math.random() < 0.5 ? -1 : 1;
-    const spawnX = game.camera.x + (side < 0 ? -80 : canvas.width + 80);
+    const spawnX = options.spawnX !== undefined
+        ? options.spawnX
+        : game.camera.x + (side < 0 ? -80 : canvas.width + 80);
     const facing = side < 0 ? 'right' : 'left';
 
     const mob = new Mob(game.spriteSheets.mobs, spawnX, 0, mobType, facing);
     mob.hostile = true;
+    mob.burnsAtDawn = isSpider ? false : true;
 
     const mobBaseFrame = mob.rowIndex * game.spriteSheets.mobs.cols;
     const mobFrameBounds = game.spriteSheets.mobs.frameBounds[mobBaseFrame];
     let groundOffset = 0;
-    if (mob.mobType === 'slime') groundOffset = 15;
-    else if (mob.mobType === 'spider' || mob.mobType === 'pig') groundOffset = 3;
+    if (mob.mobType === 'slime')  groundOffset = 15;
+    if (mob.mobType === 'spider' || mob.mobType === 'pig') groundOffset = 3;
 
     if (mobFrameBounds) {
         const spriteBottomInFrame = mobFrameBounds.offsetY + mobFrameBounds.height;
@@ -380,58 +385,66 @@ function spawnHostileMob(mobType) {
 }
 ```
 
-- [ ] **Step 2: Trigger spawning and burning on phase transitions inside `gameLoop`**
+- [ ] **Step 2: Add phase and biome transition handlers inside `gameLoop`**
 
-Inside `gameLoop`, after the `const phaseChanged = ...` line (end of Task 1 Step 3), add:
+Inside `gameLoop`, after the `const phaseChanged = ...` line, add:
 
 ```js
-    // Phase transition effects
-    if (phaseChanged) {
-        if (game.dayNight.phase === 'NIGHT') {
-            // Spawn night mobs (2-3 of each hostile type)
-            const nightMobTypes = ['zombie', 'skeleton', 'creeper'];
-            nightMobTypes.forEach(type => {
-                const count = 2 + Math.floor(Math.random() * 2);
-                for (let i = 0; i < count; i++) spawnHostileMob(type);
-            });
-        }
+    // Detect biome change for cave spider spawning
+    const biomeChanged = currentBiome !== game.prevBiome;
+    game.prevBiome = currentBiome;
 
-        if (game.dayNight.phase === 'EVENING') {
-            // Spawn slimes only if camera is in swamp biome
-            if (currentBiome === 'swamp') {
-                const count = 2 + Math.floor(Math.random() * 2);
-                for (let i = 0; i < count; i++) spawnHostileMob('slime');
+    // Phase transition: spawn night mobs
+    if (phaseChanged && game.dayNight.phase === 'NIGHT') {
+        ['zombie', 'skeleton', 'creeper'].forEach(type => {
+            const count = 2 + Math.floor(Math.random() * 2);
+            for (let i = 0; i < count; i++) spawnHostileMob(type);
+        });
+    }
+
+    // Phase transition: spawn swamp slimes at evening
+    if (phaseChanged && game.dayNight.phase === 'EVENING' && currentBiome === 'swamp') {
+        const count = 2 + Math.floor(Math.random() * 2);
+        for (let i = 0; i < count; i++) spawnHostileMob('slime');
+    }
+
+    // Phase transition: mark dawn-burning mobs
+    if (phaseChanged && game.dayNight.phase === 'DAY') {
+        const now = Date.now();
+        game.mobs.forEach(mob => {
+            if (mob.hostile && mob.burnsAtDawn && !mob.burning) {
+                mob.burning = true;
+                mob.burnStart = now;
             }
-        }
+        });
+    }
 
-        if (game.dayNight.phase === 'DAY') {
-            // Mark all hostile mobs as burning
-            const now = Date.now();
-            game.mobs.forEach(mob => {
-                if (mob.hostile && !mob.burning) {
-                    mob.burning = true;
-                    mob.burnStart = now;
-                }
-            });
-        }
+    // Biome transition: entering cave spawns spiders
+    if (biomeChanged && currentBiome === 'cave') {
+        const count = 3 + Math.floor(Math.random() * 2);
+        for (let i = 0; i < count; i++) spawnHostileMob('spider');
     }
 ```
 
-Note: `currentBiome` is computed earlier in `gameLoop` (Task 3 Step 2) — it's already available here.
+Note: `currentBiome` is computed just before this block (Task 3 Step 2).
 
-- [ ] **Step 3: Verify spawning in browser (use short cycle)**
+- [ ] **Step 3: Verify phase spawning in browser**
 
-Temporarily set `cycleDuration: 60000`. Wait ~33 seconds for NIGHT. Open console:
+In console, set `game.dayNight.cycleDuration = 60000`. Wait ~33s for NIGHT. Then:
 ```js
 game.mobs.filter(m => m.hostile).map(m => m.mobType)
 ```
-Expected: array containing `'zombie'`, `'skeleton'`, `'creeper'`. Restore `cycleDuration: 600000`.
+Expected: array of `'zombie'`, `'skeleton'`, `'creeper'`. Walk Steve left past x=-1000 and check:
+```js
+game.mobs.filter(m => m.mobType === 'spider').length
+```
+Expected: 3 or 4. Restore `cycleDuration = 600000`.
 
 - [ ] **Step 4: Commit**
 
 ```bash
 git add game.js
-git commit -m "feat: spawn hostile mobs at NIGHT transition, mark burning at DAY transition"
+git commit -m "feat: spawn night mobs on phase transitions, spiders on cave biome entry"
 ```
 
 ---
@@ -441,53 +454,72 @@ git commit -m "feat: spawn hostile mobs at NIGHT transition, mark burning at DAY
 **Files:**
 - Modify: `game.js:1257-1310` (Mob.update)
 - Modify: `game.js:1312-1349` (Mob.draw)
+- Modify: `game.js:2737` (mob loop in gameLoop)
 
-- [ ] **Step 1: Remove burned mobs in `Mob.update()`**
+- [ ] **Step 1: Add burn self-removal to `Mob.update()`**
 
 At the end of `Mob.update()`, just before the closing `}`, add:
 
 ```js
-        // Burning: flash and self-remove after 1500ms
+        // Burning: self-remove after 1500ms
         if (this.burning) {
-            const elapsed = Date.now() - this.burnStart;
-            if (elapsed > 1500) {
-                // Signal removal — game loop cleans up
+            if (Date.now() - this.burnStart > 1500) {
                 this.burnedOut = true;
             }
         }
 ```
 
-- [ ] **Step 2: Add red flash in `Mob.draw()`**
+- [ ] **Step 2: Add red flash to `Mob.draw()`**
 
-Inside `Mob.draw()`, after `ctx.save();` and before the slime clip block (~line 1326), add:
+Inside `Mob.draw()`, after `ctx.save();` and before the slime clip block, add:
 
 ```js
-        // Red flash while burning (alternate every 100ms)
-        if (this.burning) {
-            const flashOn = Math.floor(Date.now() / 100) % 2 === 0;
-            if (flashOn) {
-                ctx.restore();
-                // Draw a red overlay on this mob's area instead
-                ctx.fillStyle = 'rgba(255, 50, 0, 0.85)';
-                ctx.fillRect(screenX, screenY, this.width, this.height);
-                return;
-            }
+        // Flash red while burning (alternate every 100ms)
+        if (this.burning && Math.floor(Date.now() / 100) % 2 === 0) {
+            ctx.restore();
+            ctx.fillStyle = 'rgba(255, 50, 0, 0.85)';
+            ctx.fillRect(screenX, screenY, this.width, this.height);
+            return;
         }
 ```
 
-- [ ] **Step 3: Remove burned-out mobs in `gameLoop`**
+- [ ] **Step 3: Replace `game.mobs.forEach` in `gameLoop` with a splice-safe loop**
 
-In `gameLoop`, find the mob update loop (~line 2738):
+Find the mob update block in `gameLoop` (~line 2737):
 
 ```js
+    // Update and draw mobs (before chickens, so they appear below)
     game.mobs.forEach(mob => {
         mob.update();
+        const mobWorldBounds = mob.getWorldBounds();
+        // Only draw if mob is in viewport
+        if (mobWorldBounds.x + mobWorldBounds.width >= game.camera.x &&
+            mobWorldBounds.x <= game.camera.x + canvas.width &&
+            mobWorldBounds.y + mobWorldBounds.height >= game.camera.y &&
+            mobWorldBounds.y <= game.camera.y + canvas.height) {
+            mob.draw(ctx, game.camera.x, game.camera.y);
+        }
+        
+        // Draw bounding boxes in debug mode
+        if (game.debugMode) {
+            const bounds = mob.getBounds(game.camera.x, game.camera.y);
+            ctx.strokeStyle = 'rgba(255, 0, 0, 0.8)';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
+            
+            // Draw mob type label
+            ctx.fillStyle = 'rgba(255, 0, 0, 0.8)';
+            ctx.font = '10px monospace';
+            ctx.textAlign = 'left';
+            ctx.fillText(mob.mobType, bounds.x, bounds.y - 5);
+        }
+    });
 ```
 
-Replace the `game.mobs.forEach` block with:
+Replace with:
 
 ```js
-    // Update mobs and remove burned-out ones
+    // Update and draw mobs — iterate backwards to allow splice
     for (let i = game.mobs.length - 1; i >= 0; i--) {
         const mob = game.mobs[i];
         mob.update();
@@ -502,7 +534,6 @@ Replace the `game.mobs.forEach` block with:
             mobWorldBounds.y <= game.camera.y + canvas.height) {
             mob.draw(ctx, game.camera.x, game.camera.y);
         }
-
         if (game.debugMode) {
             const bounds = mob.getBounds(game.camera.x, game.camera.y);
             ctx.strokeStyle = 'rgba(255, 0, 0, 0.8)';
@@ -516,19 +547,19 @@ Replace the `game.mobs.forEach` block with:
     }
 ```
 
-- [ ] **Step 4: Verify burning in browser (use short cycle)**
+- [ ] **Step 4: Verify burning in browser**
 
-Temporarily set `cycleDuration: 60000`. Wait through NIGHT. At dawn, hostile mobs should flash red then disappear. Check console:
+Set `game.dayNight.cycleDuration = 60000`. Wait through NIGHT (~13s). At dawn, hostile non-spider mobs should flash red then disappear. After burn:
 ```js
-game.mobs.filter(m => m.hostile).length
+game.mobs.filter(m => m.hostile && m.burnsAtDawn).length
 ```
-Expected: `0` after burn completes. Restore `cycleDuration: 600000`.
+Expected: `0`. Restore `cycleDuration = 600000`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add game.js
-git commit -m "feat: hostile mobs flash red and disappear at dawn"
+git commit -m "feat: hostile mobs flash red and despawn at dawn, cave spiders persist"
 ```
 
 ---
@@ -541,13 +572,17 @@ git commit -m "feat: hostile mobs flash red and disappear at dawn"
 | Sky lerps day→sunset→night | Task 3 |
 | Stars and moon at night | Task 3 |
 | Swamp biome x=3000–4000 | Task 2 |
+| Cave biome x < -1000 | Task 2 |
 | `nightSky` per biome | Task 2 |
-| `hostile` flag on Mob | Task 4 |
-| Zombies/skeletons/creepers absent on startup | Task 4 |
-| Spawn night mobs at NIGHT transition | Task 5 |
-| Slimes spawn in swamp at EVENING | Task 5 |
-| Max 8 hostile mobs cap | Task 5 (`spawnHostileMob`) |
+| `hostile` + `burnsAtDawn` flags on Mob | Task 4 |
+| Only pigs in initial spawn | Task 4 |
+| Spawn zombies/skeletons/creepers at NIGHT | Task 5 |
+| Spawn slimes in swamp at EVENING | Task 5 |
+| Spawn spiders on cave biome entry | Task 5 |
+| Max 8 non-spider hostile mobs cap | Task 5 (`spawnHostileMob`) |
+| Max 4 spiders cap | Task 5 (`spawnHostileMob`) |
 | Hostile mobs burn (flash red) at dawn | Task 6 |
 | Mobs removed after 1.5s burn | Task 6 |
-| Spiders and pigs always passive | Task 4 (stay in initial spawn, `hostile: false`) |
+| Spiders do not burn at dawn | Task 5 (`burnsAtDawn: false`) + Task 6 (condition) |
+| Pigs always passive | Task 4 (stay in initial spawn, `hostile: false`) |
 | Save/load unchanged | Not touched |
