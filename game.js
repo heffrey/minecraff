@@ -1223,7 +1223,22 @@ class Mob {
             'pig': 5
         };
         this.rowIndex = mobRowMap[mobType] || 0;
-        
+
+        // Health and combat
+        const attrs = game.mobAttributes?.[mobType] || {};
+        this.maxHealth = attrs.health || 10;
+        this.health = this.maxHealth;
+        this.damage = attrs.damage || 1;
+        this.chaseRange = attrs.chaseRange || 0;
+        this.attackCooldown = attrs.attackCooldown || 500;
+        this.lastAttackTime = 0;
+        this.explodeDamage = attrs.explodeDamage || 0;
+        this.explodeRadius = attrs.explodeRadius || 0;
+        this.explodeDelay = attrs.explodeDelay || 0;
+        this.passive = attrs.passive || false;
+        this.isExploding = false;
+        this.explodeStartTime = 0;
+
         // Animation
         this.currentFrame = 0;
         this.frameCounter = 0;
@@ -1287,9 +1302,9 @@ class Mob {
         if (this.state === 'walking') {
             // Update position based on velocity
             const newX = this.x + this.velocityX;
-            
-            // Boundary checking - keep mobs within reasonable world bounds
-            const minX = -500;
+
+            // Boundary checking - keep mobs within reasonable world bounds (cave at x < -1000, so minX must be lower)
+            const minX = -2500;
             const maxX = 10000;
             
             if (newX >= minX && newX <= maxX) {
@@ -1333,12 +1348,50 @@ class Mob {
             this.updateFrameIndex();
         }
 
+        // Creeper explosion logic
+        if (this.isExploding) {
+            if (Date.now() - this.explodeStartTime > this.explodeDelay) {
+                this.die();
+            }
+        }
+
         // Burning: self-remove after 1500ms
         if (this.burning) {
             if (Date.now() - this.burnStart > 1500) {
                 this.burnedOut = true;
             }
         }
+    }
+
+    takeDamage(amount) {
+        this.health -= amount;
+
+        // Creeper: start explode timer on first hit
+        if (this.mobType === 'creeper' && !this.isExploding && this.health > 0) {
+            this.isExploding = true;
+            this.explodeStartTime = Date.now();
+        }
+
+        // Death: health <= 0
+        if (this.health <= 0) {
+            this.die();
+        }
+    }
+
+    die() {
+        if (this.mobType === 'chicken') {
+            // Large blood burst
+            createBloodParticles(this.x + this.width / 2, this.y + this.height / 2, 12);
+        } else if (this.mobType === 'creeper') {
+            // Explode with damage
+            createExplosion(this.x + this.width / 2, this.y + this.height / 2, this.explodeRadius, this.explodeDamage);
+            createBloodParticles(this.x + this.width / 2, this.y + this.height / 2, 8);
+        } else {
+            // Regular blood spray
+            createBloodParticles(this.x + this.width / 2, this.y + this.height / 2, 5);
+        }
+
+        this.burnedOut = true; // Mark for removal
     }
 
     draw(ctx, cameraX = 0, cameraY = 0) {
@@ -1871,7 +1924,12 @@ async function initGame() {
 
         // Load mobs config (if available)
         const mobsConfig = await loadObjectConfig('mobs-sprite-config.json');
-        
+
+        // Load mob attributes config (health, damage, etc.)
+        const mobsAttrResponse = await fetch('mobs-config.json');
+        const mobsAttrConfig = await mobsAttrResponse.json();
+        game.mobAttributes = mobsAttrConfig.mobAttributes || {};
+
         // Load materials sprite sheet (2048x2048px, 3x3 grid = 9 tiles)
         // Each tile is approximately 682x682px
         const tileSize = Math.floor(2048 / 3); // ~682px per tile
