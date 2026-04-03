@@ -2560,6 +2560,31 @@ function getBiomeColors(biome) {
     }
 }
 
+// Transition zone config: each entry defines a boundary, which biomes are on each side,
+// and how wide (in world units) the blend zone extends around that boundary.
+const BIOME_TRANSITIONS = [
+    { x: -1000, left: 'cave',    right: 'default', width: 150 },
+    { x:  2000, left: 'default', right: 'sand',    width: 400 },
+    { x:  3000, left: 'sand',    right: 'swamp',   width: 250 },
+    { x:  4000, left: 'swamp',   right: 'snow',    width: 500 },
+];
+
+// Returns { fromBiome, toBiome, factor } for a given world X.
+// factor is 0 (fully fromBiome) to 1 (fully toBiome), smoothstepped.
+// Outside all transition zones, fromBiome === toBiome and factor === 0.
+function getBiomeBlend(playerX) {
+    for (const t of BIOME_TRANSITIONS) {
+        const half = t.width / 2;
+        if (playerX >= t.x - half && playerX <= t.x + half) {
+            const raw = (playerX - (t.x - half)) / t.width; // 0..1 linear
+            const factor = raw * raw * (3 - 2 * raw);       // smoothstep
+            return { fromBiome: t.left, toBiome: t.right, factor };
+        }
+    }
+    const b = getBiome(playerX);
+    return { fromBiome: b, toBiome: b, factor: 0 };
+}
+
 // Save game state to localStorage
 function saveGame() {
     try {
