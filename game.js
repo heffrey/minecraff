@@ -2512,7 +2512,7 @@ function spawnTreesInArea(startX, endX, worldGroundY) {
 
 // Get biome based on world X position
 function getBiome(worldX) {
-    if (worldX < -1000)        return 'cave';
+    if (worldX <= -1000)       return 'cave';
     if (worldX >= 4000)        return 'snow';
     if (worldX >= 3000)        return 'swamp';
     if (worldX >= 2000)        return 'sand';
