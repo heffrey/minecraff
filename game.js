@@ -2491,38 +2491,50 @@ function spawnTreesInArea(startX, endX, worldGroundY) {
 
 // Get biome based on world X position
 function getBiome(worldX) {
-    // Define biome boundaries
-    const sandBiomeStart = 2000; // Sand biome starts at x=2000
-    const snowBiomeStart = 4000; // Snow biome starts at x=4000
-    
-    if (worldX >= snowBiomeStart) {
-        return 'snow';
-    } else if (worldX >= sandBiomeStart) {
-        return 'sand';
-    }
-    return 'default'; // Grass/forest biome
+    if (worldX < -1000)        return 'cave';
+    if (worldX >= 4000)        return 'snow';
+    if (worldX >= 3000)        return 'swamp';
+    if (worldX >= 2000)        return 'sand';
+    return 'default';
 }
 
 // Get biome colors
 function getBiomeColors(biome) {
     switch (biome) {
+        case 'cave':
+            return {
+                sky: '#1a1a1a',
+                nightSky: '#0a0a0a',
+                ground: '#2a2a2a',
+                grass: '#3a3a3a'
+            };
         case 'sand':
             return {
-                sky: '#FFE4B5', // Light sandy sky
-                ground: '#D2B48C', // Tan ground
-                grass: '#DEB887' // Sandy grass
+                sky: '#FFE4B5',
+                nightSky: '#0a0820',
+                ground: '#D2B48C',
+                grass: '#DEB887'
+            };
+        case 'swamp':
+            return {
+                sky: '#4a6741',
+                nightSky: '#0a1a0a',
+                ground: '#3d5c2a',
+                grass: '#2d4a1a'
             };
         case 'snow':
             return {
-                sky: '#E0E0E0', // Light gray sky
-                ground: '#F5F5F5', // White ground
-                grass: '#E8E8E8' // Snowy surface
+                sky: '#E0E0E0',
+                nightSky: '#1a1a2e',
+                ground: '#F5F5F5',
+                grass: '#E8E8E8'
             };
-        default: // default/grass
+        default:
             return {
-                sky: '#87CEEB', // Sky blue
-                ground: '#8B4513', // Brown ground
-                grass: '#228B22' // Green grass
+                sky: '#87CEEB',
+                nightSky: '#0a0a2e',
+                ground: '#8B4513',
+                grass: '#228B22'
             };
     }
 }
