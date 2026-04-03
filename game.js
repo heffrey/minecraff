@@ -3454,6 +3454,37 @@ canvas.addEventListener('click', (e) => {
     console.log(`Placed ${game.selectedMaterial} at world (${gridX}, ${gridY})`);
 });
 
+// Handle right-click to destroy placed tiles
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+canvas.addEventListener('mousedown', (e) => {
+    if (e.button !== 2) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    const worldX = x + game.camera.x;
+    const worldY = y + game.camera.y;
+    const tileSize = 32;
+    const gridX = Math.floor(worldX / tileSize) * tileSize;
+    const gridY = Math.floor(worldY / tileSize) * tileSize;
+
+    const index = game.placedTiles.findIndex(tile => {
+        const b = tile.getWorldBounds();
+        return b.x === gridX && b.y === gridY;
+    });
+
+    if (index !== -1) {
+        const tile = game.placedTiles[index];
+        game.placedTiles.splice(index, 1);
+        // Return material to inventory
+        if (tile.materialType && game.inventory[tile.materialType] !== undefined) {
+            game.inventory[tile.materialType]++;
+        }
+        saveGame();
+    }
+});
+
 // Handle mouse move for placement preview
 let mouseX = 0;
 let mouseY = 0;
