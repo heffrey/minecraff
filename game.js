@@ -256,9 +256,20 @@ class Character {
         
         // Debug: show bounding boxes
         this.showBounds = config.showBounds || false;
-        
+
         // Cache for current bounds (updated in update method)
         this.currentBounds = null;
+
+        // Health
+        this.maxHp = 20;
+        this.hp = this.maxHp;
+        this.lastDamageTaken = 0;
+
+        // Attack
+        this.attackRange = 60; // pixels
+        this.attackCooldown = 400; // ms
+        this.lastAttackTime = 0;
+        this.attackDamage = 5; // damage per hit
     }
     
     // Get the Y position where the character's feet (bottom of sprite content) should be
@@ -967,6 +978,24 @@ class Character {
         }
         
         return collidingTiles;
+    }
+
+    takeDamage(amount) {
+        this.hp -= amount;
+        this.lastDamageTaken = Date.now();
+
+        if (this.hp <= 0) {
+            this.die();
+        }
+    }
+
+    die() {
+        // Respawn at start position
+        this.x = 100;
+        this.y = 483;
+        this.hp = this.maxHp;
+        this.velocityY = 0;
+        this.velocityX = 0;
     }
 }
 
@@ -3617,9 +3646,39 @@ function gameLoop(timestamp) {
         }
     });
     
+    // Draw HP bar for Steve
+    const char = game.characters[0];
+    if (char) {
+        const barWidth = 200;
+        const barHeight = 20;
+        const barX = 10;
+        const barY = 10;
+
+        // Background
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+        ctx.fillRect(barX, barY, barWidth, barHeight);
+
+        // Health bar
+        const healthPercent = Math.max(0, char.hp / char.maxHp);
+        const healthColor = healthPercent > 0.5 ? '#00dd00' : healthPercent > 0.25 ? '#ffff00' : '#ff0000';
+        ctx.fillStyle = healthColor;
+        ctx.fillRect(barX, barY, barWidth * healthPercent, barHeight);
+
+        // Border
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(barX, barY, barWidth, barHeight);
+
+        // Text
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '14px monospace';
+        ctx.textAlign = 'left';
+        ctx.fillText(`HP: ${Math.ceil(char.hp)}/${char.maxHp}`, barX + 5, barY + 16);
+    }
+
     // Draw inventory UI
     drawInventory(ctx);
-    
+
     // Draw material palette UI
     drawMaterialPalette(ctx);
     
