@@ -1344,9 +1344,9 @@ class Mob {
 
         // Flash red while burning (alternate every 100ms)
         if (this.burning && Math.floor(Date.now() / 100) % 2 === 0) {
-            ctx.restore();
             ctx.fillStyle = 'rgba(255, 50, 0, 0.85)';
             ctx.fillRect(screenX, screenY, this.width, this.height);
+            ctx.restore();
             return;
         }
 
@@ -2754,6 +2754,7 @@ function gameLoop(timestamp) {
     const biomeColors = getBiomeColors(currentBiome);
 
     // Detect biome change for cave spider spawning
+    // Compare BEFORE updating prevBiome so biomeChanged is true on the transition frame
     const biomeChanged = currentBiome !== game.prevBiome;
     game.prevBiome = currentBiome;
 
@@ -2772,7 +2773,7 @@ function gameLoop(timestamp) {
     }
 
     // Phase transition: mark dawn-burning mobs
-    if (phaseChanged && game.dayNight.phase === 'DAY') {
+    if (phaseChanged && game.dayNight.phase === 'DAWN') {
         const now = Date.now();
         game.mobs.forEach(mob => {
             if (mob.hostile && mob.burnsAtDawn && !mob.burning) {
@@ -2813,7 +2814,7 @@ function gameLoop(timestamp) {
     // Stars and moon fade in during evening, stay through night, fade out at dawn
     const starAlpha = cyclePos >= 0.55 && cyclePos < 0.75 ? 1.0
         : cyclePos >= 0.40 && cyclePos < 0.55 ? (cyclePos - 0.40) / 0.15
-        : cyclePos >= 0.75 && cyclePos < 0.875 ? 1.0 - (cyclePos - 0.75) / 0.125
+        : cyclePos >= 0.75 && cyclePos < 1.0 ? 1.0 - (cyclePos - 0.75) / 0.25
         : 0;
 
     if (starAlpha > 0) {
