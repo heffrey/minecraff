@@ -1,0 +1,54 @@
+{
+  "mobAttributes": {
+    "zombie": {
+      "health": 20,
+      "damage": 2,
+      "chaseRange": 150,
+      "attackCooldown": 1000,
+      "attackAnimationSpeed": 0
+    },
+    "skeleton": {
+      "health": 10,
+      "damage": 1.5,
+      "chaseRange": 200,
+      "attackCooldown": 800,
+      "attackAnimationSpeed": 0
+    },
+    "creeper": {
+      "health": 15,
+      "damage": 0,
+      "chaseRange": 180,
+      "attackCooldown": 0,
+      "explodeDamage": 5,
+      "explodeRadius": 200,
+      "explodeDelay": 1500
+    },
+    "spider": {
+      "health": 12,
+      "damage": 1.5,
+      "chaseRange": 160,
+      "attackCooldown": 900,
+      "attackAnimationSpeed": 0
+    },
+    "slime": {
+      "health": 8,
+      "damage": 0.5,
+      "chaseRange": 120,
+      "attackCooldown": 1200,
+      "attackAnimationSpeed": 0
+    },
+    "pig": {
+      "health": 10,
+      "damage": 1,
+      "chaseRange": 0,
+      "attackCooldown": 800,
+      "passive": true
+    },
+    "chicken": {
+      "health": 4,
+      "damage": 0,
+      "chaseRange": 0,
+      "passive": true
+    }
+  }
+}
