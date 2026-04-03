@@ -2823,7 +2823,10 @@ function gameLoop(timestamp) {
         spawnTreesInArea(spawnStartX, spawnEndX, worldGroundY);
     }
     
-    // Get current biome and blend based on camera/player position
+    // Get current biome and blend based on camera/player position.
+    // Note: currentBiome follows biomeBlend.fromBiome, so biome-change events
+    // (e.g. cave spider spawns) fire at the leading edge of transition zones,
+    // not at the exact biome boundary.
     const playerX = game.camera.x + canvas.width / 2;
     const biomeBlend = getBiomeBlend(playerX);
     const currentBiome = biomeBlend.fromBiome;
