@@ -2436,23 +2436,54 @@ function drawInventory(ctx) {
     });
 }
 
+// Per-biome vegetation pools. Keys match game.treesMappings / game.shrubsMappings.
+// treeRatio: probability that a spawn attempt picks a tree (vs. shrub).
+const BIOME_VEGETATION = {
+    default: {
+        trees:     ['small', 'medium', 'medium2', 'blossom1', 'blossom2'],
+        shrubs:    ['shrub1', 'shrub2', 'shrub3'],
+        treeRatio: 0.7,
+    },
+    sand: {
+        trees:     ['dead', 'stump'],
+        shrubs:    ['shrub3'],
+        treeRatio: 0.4,
+    },
+    swamp: {
+        trees:     ['large', 'medium2', 'blossom3', 'blossom4'],
+        shrubs:    ['shrub1', 'shrub2'],
+        treeRatio: 0.7,
+    },
+    snow: {
+        trees:     ['small', 'medium', 'large'],
+        shrubs:    ['shrub2', 'shrub3'],
+        treeRatio: 0.7,
+    },
+    cave: {
+        trees:     [],
+        shrubs:    ['shrub1'],
+        treeRatio: 0,
+    },
+};
+
+// Returns a frame index for a tree/shrub appropriate to biomeName,
+// or null if the biome has no vegetation or a sprite key is missing from the loaded config.
+function getVegetationFrameIndex(biomeName) {
+    const pool = BIOME_VEGETATION[biomeName] ?? BIOME_VEGETATION.default;
+    const isShrub = pool.trees.length === 0 || Math.random() >= pool.treeRatio;
+    if (isShrub) {
+        if (pool.shrubs.length === 0) return null;
+        const key = pool.shrubs[Math.floor(Math.random() * pool.shrubs.length)];
+        return game.shrubsMappings?.[key] ?? null;
+    }
+    const key = pool.trees[Math.floor(Math.random() * pool.trees.length)];
+    return game.treesMappings?.[key] ?? null;
+}
+
 // Spawn trees in a given area (world X range)
 function spawnTreesInArea(startX, endX, worldGroundY) {
     if (!game.spriteSheets.trees) return;
-    
-    // Use actual mappings from config, or fallback to safe frame indices
-    const smallTreeFrame = game.treesMappings?.small ?? 3;
-    const mediumTreeFrame = game.treesMappings?.medium ?? 7;
-    const blossomTreeFrame = game.treesMappings?.blossom1 ?? 10;
-    
-    const shrub1Frame = game.shrubsMappings?.shrub1 ?? 2;
-    const shrub2Frame = game.shrubsMappings?.shrub2 ?? 3;
-    const shrub3Frame = game.shrubsMappings?.shrub3 ?? 4;
-    
-    const treeFrames = [smallTreeFrame, mediumTreeFrame, blossomTreeFrame];
-    const shrubFrames = [shrub1Frame, shrub2Frame, shrub3Frame];
-    const allFrames = [...treeFrames, ...shrubFrames];
-    
+
     // Chunk size for spawning (spawn trees every 200 pixels)
     const chunkSize = 200;
     const startChunk = Math.floor(startX / chunkSize);
@@ -2473,17 +2504,22 @@ function spawnTreesInArea(startX, endX, worldGroundY) {
         // Spawn 2-4 trees per chunk
         const treesPerChunk = 2 + Math.floor(Math.random() * 3);
         const chunkStartX = chunkX * chunkSize;
-        const chunkEndX = chunkStartX + chunkSize;
-        
+        const chunkCenterX = chunkStartX + chunkSize / 2;
+
+        // Blend-weighted biome for this chunk's vegetation.
+        // Intentionally per-chunk (not per-tree) so cached chunks stay consistent.
+        const chunkBlend = getBiomeBlend(chunkCenterX);
+        const chunkBiome = Math.random() < chunkBlend.factor
+            ? chunkBlend.toBiome
+            : chunkBlend.fromBiome;
+
         for (let i = 0; i < treesPerChunk; i++) {
             // Random X position within chunk
             const treeX = chunkStartX + Math.random() * chunkSize;
-            
-            // Randomly choose tree or shrub (70% trees, 30% shrubs)
-            const isShrub = Math.random() < 0.3;
-            const frameIndex = isShrub 
-                ? shrubFrames[Math.floor(Math.random() * shrubFrames.length)]
-                : treeFrames[Math.floor(Math.random() * treeFrames.length)];
+
+            // Pick frame from biome-appropriate vegetation pool
+            const frameIndex = getVegetationFrameIndex(chunkBiome);
+            if (frameIndex === null) continue; // biome has no vegetation or sprite key missing
             
             // Check if there's already a tree too close (minimum 50 pixels apart)
             let tooClose = false;
@@ -2525,7 +2561,7 @@ function spawnTreesInArea(startX, endX, worldGroundY) {
 
 // Get biome based on world X position
 function getBiome(worldX) {
-    if (worldX < -1000)        return 'cave';
+    if (worldX <= -1000)       return 'cave';
     if (worldX >= 4000)        return 'snow';
     if (worldX >= 3000)        return 'swamp';
     if (worldX >= 2000)        return 'sand';
@@ -2571,6 +2607,44 @@ function getBiomeColors(biome) {
                 grass: '#228B22'
             };
     }
+}
+
+// Transition zone config: each entry defines a boundary, which biomes are on each side,
+// and how wide (in world units) the blend zone extends around that boundary.
+const BIOME_TRANSITIONS = [
+    { x: -1000, left: 'cave',    right: 'default', width: 150 },
+    { x:  2000, left: 'default', right: 'sand',    width: 400 },
+    { x:  3000, left: 'sand',    right: 'swamp',   width: 250 },
+    { x:  4000, left: 'swamp',   right: 'snow',    width: 500 },
+];
+
+// Returns { fromBiome, toBiome, factor } for a given world X.
+// factor is 0 (fully fromBiome) to 1 (fully toBiome), smoothstepped.
+// Outside all transition zones, fromBiome === toBiome and factor === 0.
+function getBiomeBlend(playerX) {
+    for (const t of BIOME_TRANSITIONS) {
+        const half = t.width / 2;
+        if (playerX >= t.x - half && playerX <= t.x + half) {
+            const raw = (playerX - (t.x - half)) / t.width; // 0..1 linear
+            const factor = raw * raw * (3 - 2 * raw);       // smoothstep
+            return { fromBiome: t.left, toBiome: t.right, factor };
+        }
+    }
+    const b = getBiome(playerX);
+    return { fromBiome: b, toBiome: b, factor: 0 };
+}
+
+// Returns biome colors interpolated between fromBiome and toBiome based on blend.factor.
+function getBlendedBiomeColors(blend) {
+    if (blend.factor === 0) return getBiomeColors(blend.fromBiome);
+    const a = getBiomeColors(blend.fromBiome);
+    const b = getBiomeColors(blend.toBiome);
+    return {
+        sky:      lerpColor(a.sky,      b.sky,      blend.factor),
+        nightSky: lerpColor(a.nightSky, b.nightSky, blend.factor),
+        ground:   lerpColor(a.ground,   b.ground,   blend.factor),
+        grass:    lerpColor(a.grass,    b.grass,    blend.factor),
+    };
 }
 
 // Save game state to localStorage
@@ -2762,9 +2836,14 @@ function gameLoop(timestamp) {
         spawnTreesInArea(spawnStartX, spawnEndX, worldGroundY);
     }
     
-    // Get current biome based on camera position
-    const currentBiome = getBiome(game.camera.x + canvas.width / 2);
-    const biomeColors = getBiomeColors(currentBiome);
+    // Get current biome and blend based on camera/player position.
+    // Note: currentBiome follows biomeBlend.fromBiome, so biome-change events
+    // (e.g. cave spider spawns) fire at the leading edge of transition zones,
+    // not at the exact biome boundary.
+    const playerX = game.camera.x + canvas.width / 2;
+    const biomeBlend = getBiomeBlend(playerX);
+    const currentBiome = biomeBlend.fromBiome;
+    const biomeColors = getBlendedBiomeColors(biomeBlend);
 
     // Detect biome change for cave spider spawning
     // Compare BEFORE updating prevBiome so biomeChanged is true on the transition frame

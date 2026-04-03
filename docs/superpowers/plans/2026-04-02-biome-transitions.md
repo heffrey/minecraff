@@ -66,7 +66,7 @@ function getBiomeBlend(playerX) {
 Open the game in browser. In DevTools console run:
 ```js
 console.log(getBiomeBlend(1900)); // near default→sand boundary
-// Expected: { fromBiome: 'default', toBiome: 'sand', factor: ~0.25 }
+// Expected: { fromBiome: 'default', toBiome: 'sand', factor: ~0.156 }
 console.log(getBiomeBlend(2000)); // exactly on boundary
 // Expected: { fromBiome: 'default', toBiome: 'sand', factor: 0.5 }
 console.log(getBiomeBlend(500));  // well inside default
