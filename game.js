@@ -2585,6 +2585,19 @@ function getBiomeBlend(playerX) {
     return { fromBiome: b, toBiome: b, factor: 0 };
 }
 
+// Returns biome colors interpolated between fromBiome and toBiome based on blend.factor.
+function getBlendedBiomeColors(blend) {
+    if (blend.factor === 0) return getBiomeColors(blend.fromBiome);
+    const a = getBiomeColors(blend.fromBiome);
+    const b = getBiomeColors(blend.toBiome);
+    return {
+        sky:      lerpColor(a.sky,      b.sky,      blend.factor),
+        nightSky: lerpColor(a.nightSky, b.nightSky, blend.factor),
+        ground:   lerpColor(a.ground,   b.ground,   blend.factor),
+        grass:    lerpColor(a.grass,    b.grass,    blend.factor),
+    };
+}
+
 // Save game state to localStorage
 function saveGame() {
     try {
@@ -2774,9 +2787,11 @@ function gameLoop(timestamp) {
         spawnTreesInArea(spawnStartX, spawnEndX, worldGroundY);
     }
     
-    // Get current biome based on camera position
-    const currentBiome = getBiome(game.camera.x + canvas.width / 2);
-    const biomeColors = getBiomeColors(currentBiome);
+    // Get current biome and blend based on camera/player position
+    const playerX = game.camera.x + canvas.width / 2;
+    const currentBiome = getBiome(playerX);
+    const biomeBlend = getBiomeBlend(playerX);
+    const biomeColors = getBlendedBiomeColors(biomeBlend);
 
     // Detect biome change for cave spider spawning
     // Compare BEFORE updating prevBiome so biomeChanged is true on the transition frame
