@@ -2423,23 +2423,53 @@ function drawInventory(ctx) {
     });
 }
 
+// Per-biome vegetation pools. Keys match game.treesMappings / game.shrubsMappings.
+// treeRatio: probability that a spawn attempt picks a tree (vs. shrub).
+const BIOME_VEGETATION = {
+    default: {
+        trees:     ['small', 'medium', 'medium2', 'blossom1', 'blossom2'],
+        shrubs:    ['shrub1', 'shrub2', 'shrub3'],
+        treeRatio: 0.7,
+    },
+    sand: {
+        trees:     ['dead', 'stump'],
+        shrubs:    ['shrub3'],
+        treeRatio: 0.4,
+    },
+    swamp: {
+        trees:     ['large', 'medium2', 'blossom3', 'blossom4'],
+        shrubs:    ['shrub1', 'shrub2'],
+        treeRatio: 0.7,
+    },
+    snow: {
+        trees:     ['small', 'medium', 'large'],
+        shrubs:    ['shrub2', 'shrub3'],
+        treeRatio: 0.7,
+    },
+    cave: {
+        trees:     [],
+        shrubs:    ['shrub1'],
+        treeRatio: 0,
+    },
+};
+
+// Returns a frame index for a tree/shrub appropriate to biomeName, or null for cave (no trees).
+function getVegetationFrameIndex(biomeName) {
+    const pool = BIOME_VEGETATION[biomeName] ?? BIOME_VEGETATION.default;
+    const isShrub = pool.trees.length === 0 || Math.random() >= pool.treeRatio;
+    if (isShrub) {
+        if (pool.shrubs.length === 0) return null;
+        const key = pool.shrubs[Math.floor(Math.random() * pool.shrubs.length)];
+        return game.shrubsMappings?.[key] ?? null;
+    }
+    const key = pool.trees[Math.floor(Math.random() * pool.trees.length)];
+    return game.treesMappings?.[key] ?? null;
+}
+
 // Spawn trees in a given area (world X range)
 function spawnTreesInArea(startX, endX, worldGroundY) {
     if (!game.spriteSheets.trees) return;
-    
-    // Use actual mappings from config, or fallback to safe frame indices
-    const smallTreeFrame = game.treesMappings?.small ?? 3;
-    const mediumTreeFrame = game.treesMappings?.medium ?? 7;
-    const blossomTreeFrame = game.treesMappings?.blossom1 ?? 10;
-    
-    const shrub1Frame = game.shrubsMappings?.shrub1 ?? 2;
-    const shrub2Frame = game.shrubsMappings?.shrub2 ?? 3;
-    const shrub3Frame = game.shrubsMappings?.shrub3 ?? 4;
-    
-    const treeFrames = [smallTreeFrame, mediumTreeFrame, blossomTreeFrame];
-    const shrubFrames = [shrub1Frame, shrub2Frame, shrub3Frame];
-    const allFrames = [...treeFrames, ...shrubFrames];
-    
+
     // Chunk size for spawning (spawn trees every 200 pixels)
     const chunkSize = 200;
     const startChunk = Math.floor(startX / chunkSize);
@@ -2461,16 +2491,21 @@ function spawnTreesInArea(startX, endX, worldGroundY) {
         const treesPerChunk = 2 + Math.floor(Math.random() * 3);
         const chunkStartX = chunkX * chunkSize;
         const chunkEndX = chunkStartX + chunkSize;
-        
+        const chunkCenterX = chunkStartX + chunkSize / 2;
+
+        // Blend-weighted biome for this chunk's vegetation
+        const chunkBlend = getBiomeBlend(chunkCenterX);
+        const chunkBiome = Math.random() < chunkBlend.factor
+            ? chunkBlend.toBiome
+            : chunkBlend.fromBiome;
+
         for (let i = 0; i < treesPerChunk; i++) {
             // Random X position within chunk
             const treeX = chunkStartX + Math.random() * chunkSize;
-            
-            // Randomly choose tree or shrub (70% trees, 30% shrubs)
-            const isShrub = Math.random() < 0.3;
-            const frameIndex = isShrub 
-                ? shrubFrames[Math.floor(Math.random() * shrubFrames.length)]
-                : treeFrames[Math.floor(Math.random() * treeFrames.length)];
+
+            // Pick frame from biome-appropriate vegetation pool
+            const frameIndex = getVegetationFrameIndex(chunkBiome);
+            if (frameIndex === null) continue; // cave: no vegetation
             
             // Check if there's already a tree too close (minimum 50 pixels apart)
             let tooClose = false;
