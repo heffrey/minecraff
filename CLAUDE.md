@@ -82,4 +82,3 @@ Both `Mob.draw()` and `Tree.draw()` check `this.spriteSheet.rowOffsets[row]` bef
 - `gameLoop()` must be called via `requestAnimationFrame(gameLoop)`, never directly — a direct call passes `undefined` as `timestamp`, causing NaN cascade in delta-time and day/night.
 - Mob array iteration uses backwards `for` + `splice` (not `forEach`) to safely remove during iteration.
 - `getWorldBounds()` on Character uses `frameBounds.height` directly; the Steve idle-frame height adjustment only applies in specific positioning code paths, not in bounds.
-- Remote `origin/main` may have mobile changes the owner rejected. Do not pull blindly.
