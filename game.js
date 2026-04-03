@@ -47,7 +47,14 @@ const game = {
         targetTreeIndex: -1,
         lastHitTime: 0,
         hitInterval: 500 // Milliseconds between hits
-    }
+    },
+    dayNight: {
+        phase: 'DAY',          // 'DAY' | 'EVENING' | 'NIGHT' | 'DAWN'
+        elapsed: 0,            // ms elapsed in current cycle
+        cycleDuration: 600000, // 10 minutes
+        lastTimestamp: null    // for delta time
+    },
+    prevBiome: null            // tracks biome changes for cave spider spawning
 };
 
 // Sprite Sheet Loader
@@ -2579,7 +2586,30 @@ let lastAutoSave = Date.now();
 const AUTO_SAVE_INTERVAL = 30000; // Auto-save every 30 seconds
 
 // Game loop
-function gameLoop() {
+function gameLoop(timestamp) {
+    // Delta time
+    if (game.dayNight.lastTimestamp === null) {
+        game.dayNight.lastTimestamp = timestamp;
+    }
+    const deltaMs = timestamp - game.dayNight.lastTimestamp;
+    game.dayNight.lastTimestamp = timestamp;
+
+    // Advance day/night cycle
+    game.dayNight.elapsed = (game.dayNight.elapsed + deltaMs) % game.dayNight.cycleDuration;
+    const cyclePos = game.dayNight.elapsed / game.dayNight.cycleDuration;
+
+    const prevPhase = game.dayNight.phase;
+    if (cyclePos < 0.40) {
+        game.dayNight.phase = 'DAY';
+    } else if (cyclePos < 0.55) {
+        game.dayNight.phase = 'EVENING';
+    } else if (cyclePos < 0.75) {
+        game.dayNight.phase = 'NIGHT';
+    } else {
+        game.dayNight.phase = 'DAWN';
+    }
+    const phaseChanged = game.dayNight.phase !== prevPhase;
+
     // Auto-save periodically
     if (Date.now() - lastAutoSave > AUTO_SAVE_INTERVAL) {
         saveGame();
