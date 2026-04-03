@@ -2110,8 +2110,8 @@ async function initGame() {
         // Hide loading
         loadingEl.classList.add('hidden');
         
-        // Start game loop
-        gameLoop();
+        // Start game loop (via rAF so timestamp is always provided)
+        requestAnimationFrame(gameLoop);
     } catch (error) {
         console.error('Error loading sprite sheets:', error);
         loadingEl.textContent = 'Error loading sprite sheets. Please check the file names.';
