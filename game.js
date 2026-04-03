@@ -1232,8 +1232,14 @@ class Mob {
         this.walkDuration = 2000 + Math.random() * 3000; // Walk for 2-5 seconds
         this.idleDuration = 1000 + Math.random() * 2000; // Idle for 1-3 seconds
         this.lastStateChange = Date.now();
+        // Day/night + cave system
+        this.hostile = false;      // true = managed by spawn system
+        this.burnsAtDawn = true;   // false = survives dawn (e.g. spiders)
+        this.burning = false;
+        this.burnStart = 0;
+        this.burnedOut = false;
     }
-    
+
     updateFrameIndex() {
         // Calculate base frame index for this mob type's row
         // With 6 columns per row, we can have more animation frames
@@ -2026,10 +2032,10 @@ async function initGame() {
             console.warn('Chickens sprite sheet not loaded!');
         }
         
-        // Create mobs in the world
+        // Create passive mobs in the world (all other mobs managed by biome/phase system)
         if (game.spriteSheets.mobs) {
             const worldGroundY = canvas.height - 50;
-            const mobTypes = ['zombie', 'skeleton', 'creeper', 'spider', 'slime', 'pig'];
+            const mobTypes = ['pig'];
             const mobs = [];
             
             // Spawn a few mobs of each type
