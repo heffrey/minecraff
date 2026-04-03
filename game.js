@@ -2618,6 +2618,43 @@ const STARS = Array.from({ length: 25 }, (_, i) => ({
     r: (i % 3 === 0) ? 1.5 : 1
 }));
 
+function spawnHostileMob(mobType, options = {}) {
+    if (!game.spriteSheets.mobs) return;
+
+    // Cap: spiders capped at 4, all other hostiles capped at 8
+    const isSpider = mobType === 'spider';
+    const hostileCount = game.mobs.filter(m => m.hostile && m.mobType !== 'spider').length;
+    const spiderCount  = game.mobs.filter(m => m.mobType === 'spider').length;
+    if (isSpider && spiderCount >= 4) return;
+    if (!isSpider && hostileCount >= 8) return;
+
+    const worldGroundY = canvas.height - 50;
+    const side = Math.random() < 0.5 ? -1 : 1;
+    const spawnX = options.spawnX !== undefined
+        ? options.spawnX
+        : game.camera.x + (side < 0 ? -80 : canvas.width + 80);
+    const facing = side < 0 ? 'right' : 'left';
+
+    const mob = new Mob(game.spriteSheets.mobs, spawnX, 0, mobType, facing);
+    mob.hostile = true;
+    mob.burnsAtDawn = isSpider ? false : true;
+
+    const mobBaseFrame = mob.rowIndex * game.spriteSheets.mobs.cols;
+    const mobFrameBounds = game.spriteSheets.mobs.frameBounds[mobBaseFrame];
+    let groundOffset = 0;
+    if (mob.mobType === 'slime')  groundOffset = 15;
+    if (mob.mobType === 'spider' || mob.mobType === 'pig') groundOffset = 3;
+
+    if (mobFrameBounds) {
+        const spriteBottomInFrame = mobFrameBounds.offsetY + mobFrameBounds.height;
+        mob.y = worldGroundY - (spriteBottomInFrame * mob.scale) + groundOffset;
+    } else {
+        mob.y = worldGroundY - mob.height + groundOffset;
+    }
+
+    game.mobs.push(mob);
+}
+
 // Auto-save periodically
 let lastAutoSave = Date.now();
 const AUTO_SAVE_INTERVAL = 30000; // Auto-save every 30 seconds
@@ -2700,6 +2737,41 @@ function gameLoop(timestamp) {
     // Get current biome based on camera position
     const currentBiome = getBiome(game.camera.x + canvas.width / 2);
     const biomeColors = getBiomeColors(currentBiome);
+
+    // Detect biome change for cave spider spawning
+    const biomeChanged = currentBiome !== game.prevBiome;
+    game.prevBiome = currentBiome;
+
+    // Phase transition: spawn night mobs
+    if (phaseChanged && game.dayNight.phase === 'NIGHT') {
+        ['zombie', 'skeleton', 'creeper'].forEach(type => {
+            const count = 2 + Math.floor(Math.random() * 2);
+            for (let i = 0; i < count; i++) spawnHostileMob(type);
+        });
+    }
+
+    // Phase transition: spawn swamp slimes at evening
+    if (phaseChanged && game.dayNight.phase === 'EVENING' && currentBiome === 'swamp') {
+        const count = 2 + Math.floor(Math.random() * 2);
+        for (let i = 0; i < count; i++) spawnHostileMob('slime');
+    }
+
+    // Phase transition: mark dawn-burning mobs
+    if (phaseChanged && game.dayNight.phase === 'DAY') {
+        const now = Date.now();
+        game.mobs.forEach(mob => {
+            if (mob.hostile && mob.burnsAtDawn && !mob.burning) {
+                mob.burning = true;
+                mob.burnStart = now;
+            }
+        });
+    }
+
+    // Biome transition: entering cave spawns spiders
+    if (biomeChanged && currentBiome === 'cave') {
+        const count = 3 + Math.floor(Math.random() * 2);
+        for (let i = 0; i < count; i++) spawnHostileMob('spider');
+    }
 
     // Compute sky color based on day/night phase
     const SUNSET_COLOR = '#e85d3a';
