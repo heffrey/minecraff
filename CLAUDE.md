@@ -64,6 +64,19 @@ Typical blossom frame structure: stub (0-17), gap (18-64/74), canopy (64/74-236)
 
 **Sprite sheet bleed:** Frames at the right edge of their column can have semi-transparent pixels from the adjacent frame bleeding in. Alpha threshold is 10, so alpha=16 pixels ARE detected. Frame 6 (dead tree) has green bleed from frame 7 at columns 188-193 — fixed via `frameWidthOverrides: {"6": 123}` in the JSON. When a frame shows a "slice of another tree", check the rightmost columns for off-color pixels and add a width override.
 
+## Non-Uniform Sprite Sheet Layouts (Row Offsets)
+
+For sprite sheets where rows are not evenly spaced (e.g., different content at different Y positions), use `rowOffsets` in the config JSON to specify the exact pixel Y where a row should be drawn. `SpriteSheet` stores `rowOffsets[rowIndex]` — when `drawFrame()` calculates source Y, it checks `this.rowOffsets[row]` and uses that instead of the standard `row * frameHeight` calculation. Same logic applies in `Mob.draw()` and `Tree.draw()` when computing source sprite coordinates.
+
+**Example:** Pig sprites in `mobs.png` have proper 3D head geometry starting at Y=871, not at the default row 5 position (Y=900). Fixed via:
+```json
+"rowOffsets": {
+  "5": 871
+}
+```
+
+Both `Mob.draw()` and `Tree.draw()` check `this.spriteSheet.rowOffsets[row]` before calculating `sy` — applies automatically when the offset is set in config.
+
 ## Gotchas
 
 - `gameLoop()` must be called via `requestAnimationFrame(gameLoop)`, never directly — a direct call passes `undefined` as `timestamp`, causing NaN cascade in delta-time and day/night.

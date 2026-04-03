@@ -68,6 +68,7 @@ class SpriteSheet {
         this.totalFrames = cols * rows;
         this.frameBounds = {}; // Cache for frame bounding boxes
         this.alphaThreshold = 10; // Alpha value threshold (0-255) for considering a pixel "dark"
+        this.rowOffsets = {}; // Row Y offsets for non-uniform sprite sheet layouts
     }
 
     // Analyze a frame to find the bounding box of non-transparent pixels
@@ -200,10 +201,11 @@ class SpriteSheet {
     drawFrame(ctx, frameIndex, x, y, scale = 1) {
         const col = frameIndex % this.cols;
         const row = Math.floor(frameIndex / this.cols);
-        
+
         const sx = col * this.frameWidth;
-        const sy = row * this.frameHeight;
-        
+        const baseRowY = this.rowOffsets[row] !== undefined ? this.rowOffsets[row] : row * this.frameHeight;
+        const sy = baseRowY;
+
         ctx.drawImage(
             this.image,
             sx, sy, this.frameWidth, this.frameHeight,
@@ -1368,18 +1370,45 @@ class Mob {
             ctx.clip();
         }
         
-        // Flip horizontally if facing left
-        if (this.facing === 'left') {
-            ctx.scale(-1, 1);
-            // Draw flipped - adjust x position to account for flip
-            const flippedX = -(screenX + this.width);
-            if (this.frameIndex >= 0 && this.frameIndex < this.spriteSheet.totalFrames) {
-                this.spriteSheet.drawFrame(ctx, this.frameIndex, flippedX, screenY, this.scale);
-            }
-        } else {
-            // Draw normally when facing right
-            if (this.frameIndex >= 0 && this.frameIndex < this.spriteSheet.totalFrames) {
-                this.spriteSheet.drawFrame(ctx, this.frameIndex, screenX, screenY, this.scale);
+        // Use clipped drawing based on frameBounds to exclude empty padding
+        const frameBounds = this.spriteSheet.frameBounds[this.frameIndex];
+
+        if (this.frameIndex >= 0 && this.frameIndex < this.spriteSheet.totalFrames) {
+            if (frameBounds) {
+                // Clipped draw - extract only the content region from the sprite sheet
+                const col = this.frameIndex % this.spriteSheet.cols;
+                const row = Math.floor(this.frameIndex / this.spriteSheet.cols);
+                const sx = col * this.spriteSheet.frameWidth + frameBounds.offsetX;
+                const baseRowY = this.spriteSheet.rowOffsets[row] !== undefined ? this.spriteSheet.rowOffsets[row] : row * this.spriteSheet.frameHeight;
+                const sy = baseRowY + frameBounds.offsetY;
+
+                // Flip horizontally if facing left
+                if (this.facing === 'left') {
+                    ctx.scale(-1, 1);
+                    const flippedX = -(screenX + frameBounds.width * this.scale) - (frameBounds.offsetX * this.scale);
+                    ctx.drawImage(
+                        this.spriteSheet.image,
+                        sx, sy, frameBounds.width, frameBounds.height,
+                        flippedX, screenY + frameBounds.offsetY * this.scale,
+                        frameBounds.width * this.scale, frameBounds.height * this.scale
+                    );
+                } else {
+                    ctx.drawImage(
+                        this.spriteSheet.image,
+                        sx, sy, frameBounds.width, frameBounds.height,
+                        screenX + frameBounds.offsetX * this.scale, screenY + frameBounds.offsetY * this.scale,
+                        frameBounds.width * this.scale, frameBounds.height * this.scale
+                    );
+                }
+            } else {
+                // Fallback: draw full frame if no bounds
+                if (this.facing === 'left') {
+                    ctx.scale(-1, 1);
+                    const flippedX = -(screenX + this.width);
+                    this.spriteSheet.drawFrame(ctx, this.frameIndex, flippedX, screenY, this.scale);
+                } else {
+                    this.spriteSheet.drawFrame(ctx, this.frameIndex, screenX, screenY, this.scale);
+                }
             }
         }
         
@@ -1653,7 +1682,8 @@ class Tree {
                 const col = this.frameIndex % this.spriteSheet.cols;
                 const row = Math.floor(this.frameIndex / this.spriteSheet.cols);
                 const sx = col * this.spriteSheet.frameWidth + frameBounds.offsetX;
-                const sy = row * this.spriteSheet.frameHeight + frameBounds.offsetY;
+                const baseRowY = this.spriteSheet.rowOffsets[row] !== undefined ? this.spriteSheet.rowOffsets[row] : row * this.spriteSheet.frameHeight;
+                const sy = baseRowY + frameBounds.offsetY;
                 ctx.drawImage(
                     this.spriteSheet.image,
                     sx, sy, frameBounds.width, frameBounds.height,
@@ -1838,6 +1868,9 @@ async function initGame() {
                 shrubsMappings = treesConfig.objectMappings.shrubs;
             }
         }
+
+        // Load mobs config (if available)
+        const mobsConfig = await loadObjectConfig('mobs-sprite-config.json');
         
         // Load materials sprite sheet (2048x2048px, 3x3 grid = 9 tiles)
         // Each tile is approximately 682x682px
@@ -1973,6 +2006,43 @@ async function initGame() {
                 }
             }
         }
+
+        // Apply per-frame bounds overrides from mobs config
+        if (game.spriteSheets.mobs) {
+            if (mobsConfig?.frameWidthOverrides) {
+                for (const [frameIndex, width] of Object.entries(mobsConfig.frameWidthOverrides)) {
+                    const idx = parseInt(frameIndex);
+                    if (game.spriteSheets.mobs.frameBounds[idx]) {
+                        game.spriteSheets.mobs.frameBounds[idx].width = width;
+                    }
+                }
+            }
+            if (mobsConfig?.frameHeightOverrides) {
+                for (const [frameIndex, height] of Object.entries(mobsConfig.frameHeightOverrides)) {
+                    const idx = parseInt(frameIndex);
+                    if (game.spriteSheets.mobs.frameBounds[idx]) {
+                        game.spriteSheets.mobs.frameBounds[idx].height = height;
+                    }
+                }
+            }
+            if (mobsConfig?.frameOffsetYOverrides) {
+                for (const [frameIndex, offsetY] of Object.entries(mobsConfig.frameOffsetYOverrides)) {
+                    const idx = parseInt(frameIndex);
+                    if (game.spriteSheets.mobs.frameBounds[idx]) {
+                        game.spriteSheets.mobs.frameBounds[idx].offsetY = offsetY;
+                    }
+                }
+            }
+            if (mobsConfig?.rowOffsets) {
+                for (const [rowIndex, offsetY] of Object.entries(mobsConfig.rowOffsets)) {
+                    const idx = parseInt(rowIndex);
+                    game.spriteSheets.mobs.rowOffsets[idx] = offsetY;
+                }
+            }
+        }
+
+        // Store mob ground offsets from config
+        game.mobGroundOffsets = mobsConfig?.mobGroundOffsets || {};
 
         // Store mappings for later use
         if (inventoryMappings) {
@@ -2131,9 +2201,9 @@ async function initGame() {
                 // Spiders, pigs, and slimes may need additional ground offset to prevent floating
                 let groundOffset = 0;
                 if (mob.mobType === 'slime') {
-                    groundOffset = 15; // Lower slimes by 10 pixels
+                    groundOffset = game.mobGroundOffsets['slime'] ?? 15; // Lower slimes by 15 pixels
                 } else if (mob.mobType === 'spider' || mob.mobType === 'pig') {
-                    groundOffset = 3; // Lower spiders and pigs by 3 pixels
+                    groundOffset = game.mobGroundOffsets[mob.mobType] ?? 3; // Lower spiders and pigs by 3 pixels
                 }
                 
                 if (mobFrameBounds) {
@@ -2787,8 +2857,8 @@ function spawnHostileMob(mobType, options = {}) {
     const mobBaseFrame = mob.rowIndex * game.spriteSheets.mobs.cols;
     const mobFrameBounds = game.spriteSheets.mobs.frameBounds[mobBaseFrame];
     let groundOffset = 0;
-    if (mob.mobType === 'slime')  groundOffset = 15;
-    if (mob.mobType === 'spider' || mob.mobType === 'pig') groundOffset = 3;
+    if (mob.mobType === 'slime')  groundOffset = game.mobGroundOffsets['slime'] ?? 15;
+    if (mob.mobType === 'spider' || mob.mobType === 'pig') groundOffset = game.mobGroundOffsets[mob.mobType] ?? 3;
 
     if (mobFrameBounds) {
         const spriteBottomInFrame = mobFrameBounds.offsetY + mobFrameBounds.height;
