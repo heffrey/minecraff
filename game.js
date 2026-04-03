@@ -2593,6 +2593,25 @@ function loadGame() {
     }
 }
 
+// Lerp between two hex colors by t (0=a, 1=b)
+function lerpColor(a, b, t) {
+    const ah = parseInt(a.slice(1), 16);
+    const bh = parseInt(b.slice(1), 16);
+    const ar = (ah >> 16) & 0xff, ag = (ah >> 8) & 0xff, ab = ah & 0xff;
+    const br = (bh >> 16) & 0xff, bg = (bh >> 8) & 0xff, bb = bh & 0xff;
+    const rr = Math.round(ar + (br - ar) * t);
+    const rg = Math.round(ag + (bg - ag) * t);
+    const rb = Math.round(ab + (bb - ab) * t);
+    return `#${((rr << 16) | (rg << 8) | rb).toString(16).padStart(6, '0')}`;
+}
+
+// Pre-generate star positions (deterministic so they don't move frame-to-frame)
+const STARS = Array.from({ length: 25 }, (_, i) => ({
+    x: ((i * 137 + 53) % 97) / 97,
+    y: ((i * 79  + 17) % 61) / 61 * 0.7,
+    r: (i % 3 === 0) ? 1.5 : 1
+}));
+
 // Auto-save periodically
 let lastAutoSave = Date.now();
 const AUTO_SAVE_INTERVAL = 30000; // Auto-save every 30 seconds
@@ -2675,10 +2694,54 @@ function gameLoop(timestamp) {
     // Get current biome based on camera position
     const currentBiome = getBiome(game.camera.x + canvas.width / 2);
     const biomeColors = getBiomeColors(currentBiome);
-    
-    // Clear canvas with biome sky color
-    ctx.fillStyle = biomeColors.sky;
+
+    // Compute sky color based on day/night phase
+    const SUNSET_COLOR = '#e85d3a';
+    let skyColor;
+    if (cyclePos < 0.40) {
+        skyColor = biomeColors.sky;
+    } else if (cyclePos < 0.55) {
+        const t = (cyclePos - 0.40) / 0.15;
+        skyColor = t < 0.5
+            ? lerpColor(biomeColors.sky, SUNSET_COLOR, t * 2)
+            : lerpColor(SUNSET_COLOR, biomeColors.nightSky, (t - 0.5) * 2);
+    } else if (cyclePos < 0.75) {
+        skyColor = biomeColors.nightSky;
+    } else {
+        const t = (cyclePos - 0.75) / 0.25;
+        skyColor = t < 0.5
+            ? lerpColor(biomeColors.nightSky, SUNSET_COLOR, t * 2)
+            : lerpColor(SUNSET_COLOR, biomeColors.sky, (t - 0.5) * 2);
+    }
+
+    ctx.fillStyle = skyColor;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Stars and moon fade in during evening, stay through night, fade out at dawn
+    const starAlpha = cyclePos >= 0.55 && cyclePos < 0.75 ? 1.0
+        : cyclePos >= 0.40 && cyclePos < 0.55 ? (cyclePos - 0.40) / 0.15
+        : cyclePos >= 0.75 && cyclePos < 0.875 ? 1.0 - (cyclePos - 0.75) / 0.125
+        : 0;
+
+    if (starAlpha > 0) {
+        ctx.save();
+        ctx.globalAlpha = starAlpha;
+        ctx.fillStyle = '#ffffff';
+        for (const star of STARS) {
+            ctx.beginPath();
+            ctx.arc(star.x * canvas.width, star.y * canvas.height * 0.8, star.r, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        // Moon: glowing circle top-right
+        ctx.shadowColor = '#fffde7';
+        ctx.shadowBlur = 12;
+        ctx.fillStyle = '#fffde7';
+        ctx.beginPath();
+        ctx.arc(canvas.width - 60, 40, 14, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+        ctx.restore();
+    }
     
     // Draw ground with biome colors
     // Ground is at fixed world Y position, convert to screen coordinates
