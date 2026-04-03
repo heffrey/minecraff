@@ -997,6 +997,42 @@ class Character {
         this.velocityY = 0;
         this.velocityX = 0;
     }
+
+    attack() {
+        const now = Date.now();
+        if (now - this.lastAttackTime < this.attackCooldown) {
+            return; // Still on cooldown
+        }
+
+        this.lastAttackTime = now;
+
+        // Check for mobs in range
+        const attackX = this.x + this.width / 2;
+        const attackY = this.y + this.height / 2;
+
+        for (let i = game.mobs.length - 1; i >= 0; i--) {
+            const mob = game.mobs[i];
+            if (mob.burnedOut) continue;
+
+            const mobX = mob.x + mob.width / 2;
+            const mobY = mob.y + mob.height / 2;
+            const dx = mobX - attackX;
+            const dy = mobY - attackY;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+
+            if (dist < this.attackRange) {
+                mob.takeDamage(this.attackDamage);
+
+                // Knockback
+                const knockbackDist = 15;
+                const angle = Math.atan2(dy, dx);
+                mob.x += Math.cos(angle) * knockbackDist;
+
+                // Blood particles
+                createBloodParticles(mobX, mobY, 3);
+            }
+        }
+    }
 }
 
 // Spark Particle Class (for hit effects)
@@ -2449,46 +2485,67 @@ document.addEventListener('keydown', (e) => {
         console.log(`Debug mode: ${game.debugMode ? 'ON' : 'OFF'}`);
     }
     
-    // Action key (E) - Start mining nearest tree (held down for continuous mining)
+    // Action key (E) - Attack mobs or mine trees
     if (e.key === 'e' || e.key === 'E') {
         const steve = game.characters[0]; // Steve is the first character
         if (!steve) return;
-        
-        // Find the nearest tree to Steve
-        let nearestTree = null;
-        let nearestDistance = Infinity;
-        let nearestTreeIndex = -1;
-        
-        for (let i = 0; i < game.trees.length; i++) {
-            const tree = game.trees[i];
-            if (steve.isNearTree(tree)) {
-                const steveWorldBounds = steve.getWorldBounds();
-                const steveCenterX = steveWorldBounds.x + steveWorldBounds.width / 2;
-                const steveCenterY = steveWorldBounds.y + steveWorldBounds.height / 2;
-                const treeWorldBounds = tree.getWorldBounds();
-                const treeCenterX = treeWorldBounds.x + treeWorldBounds.width / 2;
-                const treeCenterY = treeWorldBounds.y + treeWorldBounds.height / 2;
-                
-                const dx = steveCenterX - treeCenterX;
-                const dy = steveCenterY - treeCenterY;
-                const distance = Math.sqrt(dx * dx + dy * dy);
-                
-                if (distance < nearestDistance) {
-                    nearestDistance = distance;
-                    nearestTree = tree;
-                    nearestTreeIndex = i;
-                }
+
+        // First, try to attack mobs in range
+        const steveWorldBounds = steve.getWorldBounds();
+        const steveCenterX = steveWorldBounds.x + steveWorldBounds.width / 2;
+        const steveCenterY = steveWorldBounds.y + steveWorldBounds.height / 2;
+
+        let mobInRange = false;
+        for (const mob of game.mobs) {
+            if (mob.burnedOut) continue;
+            const mobCenterX = mob.x + mob.width / 2;
+            const mobCenterY = mob.y + mob.height / 2;
+            const dx = mobCenterX - steveCenterX;
+            const dy = mobCenterY - steveCenterY;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+
+            if (dist < steve.attackRange) {
+                mobInRange = true;
+                break;
             }
         }
-        
-        if (nearestTree) {
-            // Start mining - set state and track target tree
-            game.mining.isMining = true;
-            game.mining.targetTreeIndex = nearestTreeIndex;
-            game.mining.lastHitTime = Date.now();
-            steve.state = 'mine';
+
+        if (mobInRange) {
+            // Attack mobs
+            steve.attack();
         } else {
-            console.log('No tree nearby. Get closer to a tree and press E to chop it.');
+            // No mobs in range, try mining trees
+            // Find the nearest tree to Steve
+            let nearestTree = null;
+            let nearestDistance = Infinity;
+            let nearestTreeIndex = -1;
+
+            for (let i = 0; i < game.trees.length; i++) {
+                const tree = game.trees[i];
+                if (steve.isNearTree(tree)) {
+                    const treeWorldBounds = tree.getWorldBounds();
+                    const treeCenterX = treeWorldBounds.x + treeWorldBounds.width / 2;
+                    const treeCenterY = treeWorldBounds.y + treeWorldBounds.height / 2;
+
+                    const dx = steveCenterX - treeCenterX;
+                    const dy = steveCenterY - treeCenterY;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+
+                    if (distance < nearestDistance) {
+                        nearestDistance = distance;
+                        nearestTree = tree;
+                        nearestTreeIndex = i;
+                    }
+                }
+            }
+
+            if (nearestTree) {
+                // Start mining - set state and track target tree
+                game.mining.isMining = true;
+                game.mining.targetTreeIndex = nearestTreeIndex;
+                game.mining.lastHitTime = Date.now();
+                steve.state = 'mine';
+            }
         }
     }
     
