@@ -2453,7 +2453,8 @@ const BIOME_VEGETATION = {
     },
 };
 
-// Returns a frame index for a tree/shrub appropriate to biomeName, or null for cave (no trees).
+// Returns a frame index for a tree/shrub appropriate to biomeName,
+// or null if the biome has no vegetation or a sprite key is missing from the loaded config.
 function getVegetationFrameIndex(biomeName) {
     const pool = BIOME_VEGETATION[biomeName] ?? BIOME_VEGETATION.default;
     const isShrub = pool.trees.length === 0 || Math.random() >= pool.treeRatio;
@@ -2490,10 +2491,10 @@ function spawnTreesInArea(startX, endX, worldGroundY) {
         // Spawn 2-4 trees per chunk
         const treesPerChunk = 2 + Math.floor(Math.random() * 3);
         const chunkStartX = chunkX * chunkSize;
-        const chunkEndX = chunkStartX + chunkSize;
         const chunkCenterX = chunkStartX + chunkSize / 2;
 
-        // Blend-weighted biome for this chunk's vegetation
+        // Blend-weighted biome for this chunk's vegetation.
+        // Intentionally per-chunk (not per-tree) so cached chunks stay consistent.
         const chunkBlend = getBiomeBlend(chunkCenterX);
         const chunkBiome = Math.random() < chunkBlend.factor
             ? chunkBlend.toBiome
@@ -2505,7 +2506,7 @@ function spawnTreesInArea(startX, endX, worldGroundY) {
 
             // Pick frame from biome-appropriate vegetation pool
             const frameIndex = getVegetationFrameIndex(chunkBiome);
-            if (frameIndex === null) continue; // cave: no vegetation
+            if (frameIndex === null) continue; // biome has no vegetation or sprite key missing
             
             // Check if there's already a tree too close (minimum 50 pixels apart)
             let tooClose = false;
