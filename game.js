@@ -1499,6 +1499,58 @@ class Mob {
                 this.burnedOut = true;
             }
         }
+
+        // Attack behavior for hostile mobs
+        if (this.hostile && !this.passive && game.characters.length > 0) {
+            const char = game.characters[0];
+            const dx = char.x + char.width / 2 - (this.x + this.width / 2);
+            const dy = char.y + char.height / 2 - (this.y + this.height / 2);
+            const distToPlayer = Math.sqrt(dx * dx + dy * dy);
+
+            // Chase player if in range
+            if (distToPlayer < this.chaseRange && this.chaseRange > 0) {
+                // Move toward player
+                if (Math.abs(dx) > 5) {
+                    this.facing = dx > 0 ? 'right' : 'left';
+                    this.velocityX = this.facing === 'right' ? this.walkSpeed : -this.walkSpeed;
+                    this.state = 'walking';
+                }
+            }
+
+            // Attack player if adjacent
+            if (distToPlayer < 50 && this.attackCooldown > 0) {
+                const now = Date.now();
+                if (now - this.lastAttackTime > this.attackCooldown) {
+                    this.lastAttackTime = now;
+                    char.takeDamage(this.damage);
+                    createBloodParticles(char.x + char.width / 2, char.y + char.height / 2, 2);
+                }
+            }
+        }
+
+        // Pig passive aggression: attack back if damaged
+        if (this.mobType === 'pig' && this.health < this.maxHealth) {
+            // Pig was hit, now it attacks
+            this.passive = false;
+            const char = game.characters[0];
+            const dx = char.x + char.width / 2 - (this.x + this.width / 2);
+            const dy = char.y + char.height / 2 - (this.y + this.height / 2);
+            const distToPlayer = Math.sqrt(dx * dx + dy * dy);
+
+            if (distToPlayer < 80) {
+                this.facing = dx > 0 ? 'right' : 'left';
+                this.velocityX = this.facing === 'right' ? this.walkSpeed : -this.walkSpeed;
+                this.state = 'walking';
+            }
+
+            if (distToPlayer < 50) {
+                const now = Date.now();
+                if (now - this.lastAttackTime > this.attackCooldown) {
+                    this.lastAttackTime = now;
+                    char.takeDamage(this.damage);
+                }
+            }
+        }
     }
 
     takeDamage(amount) {
