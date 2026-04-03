@@ -3271,6 +3271,23 @@ function gameLoop(timestamp) {
         }
     }
     
+    // Debug: time-of-day overlay
+    if (game.debugMode) {
+        const minutes = Math.floor((game.dayNight.elapsed / game.dayNight.cycleDuration) * 10);
+        const seconds = Math.floor(((game.dayNight.elapsed / game.dayNight.cycleDuration) * 600) % 60);
+        const timeStr = `${game.dayNight.phase}  ${minutes}:${String(seconds).padStart(2, '0')} / 10:00`;
+        ctx.save();
+        ctx.font = 'bold 13px monospace';
+        ctx.textAlign = 'left';
+        const pad = 8;
+        const tw = ctx.measureText(timeStr).width + pad * 2;
+        ctx.fillStyle = 'rgba(0,0,0,0.55)';
+        ctx.fillRect(8, 8, tw, 22);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(timeStr, 8 + pad, 24);
+        ctx.restore();
+    }
+
     requestAnimationFrame(gameLoop);
 }
 
