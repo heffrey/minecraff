@@ -1320,8 +1320,15 @@ class Mob {
             }
             this.updateFrameIndex();
         }
+
+        // Burning: self-remove after 1500ms
+        if (this.burning) {
+            if (Date.now() - this.burnStart > 1500) {
+                this.burnedOut = true;
+            }
+        }
     }
-    
+
     draw(ctx, cameraX = 0, cameraY = 0) {
         // Convert world coordinates to screen coordinates
         const screenX = this.x - cameraX;
@@ -1334,7 +1341,15 @@ class Mob {
         }
         
         ctx.save();
-        
+
+        // Flash red while burning (alternate every 100ms)
+        if (this.burning && Math.floor(Date.now() / 100) % 2 === 0) {
+            ctx.restore();
+            ctx.fillStyle = 'rgba(255, 50, 0, 0.85)';
+            ctx.fillRect(screenX, screenY, this.width, this.height);
+            return;
+        }
+
         // For slimes, clip the bottom 8 pixels to truncate the sprite
         if (this.mobType === 'slime') {
             const bottomClipPixels = 8 * this.scale; // Convert to screen pixels
@@ -2917,32 +2932,32 @@ function gameLoop(timestamp) {
         }
     });
     
-    // Update and draw mobs (before chickens, so they appear below)
-    game.mobs.forEach(mob => {
+    // Update and draw mobs — iterate backwards to allow splice
+    for (let i = game.mobs.length - 1; i >= 0; i--) {
+        const mob = game.mobs[i];
         mob.update();
+        if (mob.burnedOut) {
+            game.mobs.splice(i, 1);
+            continue;
+        }
         const mobWorldBounds = mob.getWorldBounds();
-        // Only draw if mob is in viewport
         if (mobWorldBounds.x + mobWorldBounds.width >= game.camera.x &&
             mobWorldBounds.x <= game.camera.x + canvas.width &&
             mobWorldBounds.y + mobWorldBounds.height >= game.camera.y &&
             mobWorldBounds.y <= game.camera.y + canvas.height) {
             mob.draw(ctx, game.camera.x, game.camera.y);
         }
-        
-        // Draw bounding boxes in debug mode
         if (game.debugMode) {
             const bounds = mob.getBounds(game.camera.x, game.camera.y);
             ctx.strokeStyle = 'rgba(255, 0, 0, 0.8)';
             ctx.lineWidth = 2;
             ctx.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
-            
-            // Draw mob type label
             ctx.fillStyle = 'rgba(255, 0, 0, 0.8)';
             ctx.font = '10px monospace';
             ctx.textAlign = 'left';
             ctx.fillText(mob.mobType, bounds.x, bounds.y - 5);
         }
-    });
+    }
     
     // Update and draw chickens (before trees, so trees appear on top)
     game.chickens.forEach(chicken => {
