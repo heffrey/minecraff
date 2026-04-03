@@ -2789,8 +2789,8 @@ function gameLoop(timestamp) {
     
     // Get current biome and blend based on camera/player position
     const playerX = game.camera.x + canvas.width / 2;
-    const currentBiome = getBiome(playerX);
     const biomeBlend = getBiomeBlend(playerX);
+    const currentBiome = biomeBlend.fromBiome;
     const biomeColors = getBlendedBiomeColors(biomeBlend);
 
     // Detect biome change for cave spider spawning
