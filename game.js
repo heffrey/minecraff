@@ -1142,6 +1142,79 @@ class WoodParticle {
     }
 }
 
+// Blood Particle Class (for mob damage/death)
+class BloodParticle {
+    constructor(x, y) {
+        this.x = x;
+        this.y = y;
+        this.size = 3 + Math.random() * 2; // Random size between 3-5 pixels
+
+        // Physics - blood splats outward
+        const angle = Math.random() * Math.PI * 2; // Random direction
+        const speed = 1.5 + Math.random() * 1.5; // Random speed between 1.5-3
+        this.velocityX = Math.cos(angle) * speed;
+        this.velocityY = Math.sin(angle) * speed - 0.5; // Slight upward bias
+        this.gravity = 0.2;
+
+        // Color - dark red blood
+        const colorVariation = Math.random();
+        if (colorVariation < 0.6) {
+            this.color = '#AA0000'; // Dark red
+        } else {
+            this.color = '#880000'; // Darker red
+        }
+
+        // Lifecycle
+        this.createdAt = Date.now();
+        this.maxLifetime = 800 + Math.random() * 400; // 0.8-1.2 seconds
+        this.alpha = 1.0;
+    }
+
+    update() {
+        // Apply gravity
+        this.velocityY += this.gravity;
+
+        // Update position
+        this.x += this.velocityX;
+        this.y += this.velocityY;
+
+        // Fade out
+        const elapsed = Date.now() - this.createdAt;
+        const fadeStart = this.maxLifetime * 0.5; // Start fading at 50% of lifetime
+        if (elapsed > fadeStart) {
+            const fadeProgress = (elapsed - fadeStart) / (this.maxLifetime - fadeStart);
+            this.alpha = Math.max(0, 1.0 - fadeProgress);
+        }
+
+        // Shrink slightly over time
+        this.size *= 0.97;
+    }
+
+    draw(ctx, cameraX = 0, cameraY = 0) {
+        ctx.save();
+
+        // Convert world coordinates to screen coordinates
+        const screenX = this.x - cameraX;
+        const screenY = this.y - cameraY;
+
+        // Apply alpha
+        ctx.globalAlpha = this.alpha;
+
+        // Draw blood as a small circle
+        ctx.fillStyle = this.color;
+        ctx.beginPath();
+        ctx.arc(screenX, screenY, this.size, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.restore();
+    }
+
+    isDead() {
+        const elapsed = Date.now() - this.createdAt;
+        return elapsed >= this.maxLifetime || this.alpha <= 0 || this.size < 0.5;
+    }
+}
+
 // Tile Class (for placed materials)
 class Tile {
     constructor(spriteSheet, x, y, frameIndex, materialName) {
@@ -2931,6 +3004,56 @@ function spawnHostileMob(mobType, options = {}) {
 // Auto-save periodically
 let lastAutoSave = Date.now();
 const AUTO_SAVE_INTERVAL = 30000; // Auto-save every 30 seconds
+
+// Create blood particles at a location
+function createBloodParticles(x, y, count = 5) {
+    for (let i = 0; i < count; i++) {
+        const particle = new BloodParticle(x, y);
+        game.particles.push(particle);
+    }
+}
+
+// Create explosion at a location, damage nearby mobs and player
+function createExplosion(x, y, radius = 100, damage = 5) {
+    // Damage nearby mobs
+    for (let i = game.mobs.length - 1; i >= 0; i--) {
+        const mob = game.mobs[i];
+        const dx = mob.x + mob.width / 2 - x;
+        const dy = mob.y + mob.height / 2 - y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+
+        if (dist < radius && !mob.burnedOut) {
+            mob.takeDamage(damage);
+            // Knockback
+            const knockbackDist = 30;
+            const angle = Math.atan2(dy, dx);
+            mob.x += Math.cos(angle) * knockbackDist;
+        }
+    }
+
+    // Damage player
+    const char = game.characters[0];
+    if (char && char.takeDamage) {
+        const dx = char.x + char.width / 2 - x;
+        const dy = char.y + char.height / 2 - y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+
+        if (dist < radius) {
+            char.takeDamage(Math.ceil(damage / 2));
+        }
+    }
+
+    // Explosion particles
+    for (let i = 0; i < 15; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = 3 + Math.random() * 2;
+        const particle = new SparkParticle(x, y);
+        // Override velocity for explosive effect
+        particle.velocityX = Math.cos(angle) * speed;
+        particle.velocityY = Math.sin(angle) * speed - 1;
+        game.particles.push(particle);
+    }
+}
 
 // Game loop
 function gameLoop(timestamp) {
