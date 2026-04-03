@@ -292,45 +292,53 @@ class Character {
         return calculatedY;
     }
     
-    // Get current frame's bounding box in world coordinates (synchronous, uses cached frame bounds)
+    // Get stable hitbox bounds using the idle frame as a fixed reference,
+    // so the hitbox doesn't shift as animation frames change.
+    _getStableFrameBounds() {
+        const idleFrameIndex = this.animations.idle[0] ?? 0;
+        const idleBounds = this.spriteSheet.frameBounds[idleFrameIndex];
+        if (idleBounds) return idleBounds;
+        // Fall back to any available frame
+        const first = Object.values(this.spriteSheet.frameBounds)[0];
+        return first || null;
+    }
+
+    // Get current frame's bounding box in screen coordinates (synchronous, uses cached frame bounds)
     getCurrentBounds(cameraX = 0, cameraY = 0) {
-        const animFrames = this.animations[this.state] || this.animations.idle;
-        const frameIndex = animFrames[this.currentFrame] || 0;
-        const frameBounds = this.spriteSheet.frameBounds[frameIndex];
-        
-        // If bounds not yet analyzed, return full frame bounds
+        const frameBounds = this._getStableFrameBounds();
+
         if (!frameBounds) {
             return {
-                x: this.x - cameraX, // Screen X
-                y: this.y - cameraY, // Screen Y
+                x: this.x - cameraX,
+                y: this.y - cameraY,
                 width: this.width,
                 height: this.height
             };
         }
-        
-        // Convert frame-relative bounds to world coordinates, then to screen coordinates
+
+        // For Steve, use Alex's idle frame width for the hitbox
+        const alexBounds = this.name === 'Steve' ? game.spriteSheets.alex?.frameBounds[characterConfigs.alex.animations.idle[0]] : null;
+        const hitboxWidth = alexBounds ? alexBounds.width : frameBounds.width;
+
         let worldX = this.x + (frameBounds.offsetX * this.scale);
         const worldY = this.y + (frameBounds.offsetY * this.scale);
-        
-        // Account for horizontal flip
+
         if (this.facing === 'left') {
-            worldX = this.x + this.width - (frameBounds.offsetX + frameBounds.width) * this.scale;
+            worldX = this.x + this.width - (frameBounds.offsetX + hitboxWidth) * this.scale;
         }
-        
+
         return {
-            x: worldX - cameraX, // Screen X
-            y: worldY - cameraY, // Screen Y
-            width: frameBounds.width * this.scale,
+            x: worldX - cameraX,
+            y: worldY - cameraY,
+            width: hitboxWidth * this.scale,
             height: frameBounds.height * this.scale
         };
     }
-    
+
     // Get world bounds (for collision detection)
     getWorldBounds() {
-        const animFrames = this.animations[this.state] || this.animations.idle;
-        const frameIndex = animFrames[this.currentFrame] || 0;
-        const frameBounds = this.spriteSheet.frameBounds[frameIndex];
-        
+        const frameBounds = this._getStableFrameBounds();
+
         if (!frameBounds) {
             return {
                 x: this.x,
@@ -339,18 +347,22 @@ class Character {
                 height: this.height
             };
         }
-        
+
+        // For Steve, use Alex's idle frame width for the hitbox
+        const alexBounds = this.name === 'Steve' ? game.spriteSheets.alex?.frameBounds[characterConfigs.alex.animations.idle[0]] : null;
+        const hitboxWidth = alexBounds ? alexBounds.width : frameBounds.width;
+
         let worldX = this.x + (frameBounds.offsetX * this.scale);
         const worldY = this.y + (frameBounds.offsetY * this.scale);
-        
+
         if (this.facing === 'left') {
-            worldX = this.x + this.width - (frameBounds.offsetX + frameBounds.width) * this.scale;
+            worldX = this.x + this.width - (frameBounds.offsetX + hitboxWidth) * this.scale;
         }
-        
+
         return {
             x: worldX,
             y: worldY,
-            width: frameBounds.width * this.scale,
+            width: hitboxWidth * this.scale,
             height: frameBounds.height * this.scale
         };
     }
@@ -372,59 +384,37 @@ class Character {
         this.y += this.velocityY;
         
         // Check for step-up opportunity (stairs climbing)
-        // Only check if moving horizontally and on ground, and NOT already standing on a tile
-        // This prevents interference with normal movement across adjacent tiles at the same level
         if (this.velocityX !== 0 && this.onGround) {
-            // First check if we're already standing on a tile - if so, skip step-up logic
-            // The normal tile standing logic will handle adjacent tiles at the same level
             const charWorldBounds = this.getWorldBounds();
             const charFeetY = charWorldBounds.y + charWorldBounds.height;
-            let alreadyOnTile = false;
-            
-            for (const tile of game.placedTiles) {
-                const tileWorldBounds = tile.getWorldBounds();
-                const horizontalOverlap = charWorldBounds.x < tileWorldBounds.x + tileWorldBounds.width &&
-                                         charWorldBounds.x + charWorldBounds.width > tileWorldBounds.x;
-                if (horizontalOverlap) {
-                    const tileTopY = tileWorldBounds.y;
-                    const tolerance = 8;
-                    if (charFeetY >= tileTopY - tolerance && charFeetY <= tileTopY + tolerance) {
-                        alreadyOnTile = true;
-                        break;
-                    }
-                }
-            }
-            
-            // Only check for step-up if we're NOT already on a tile
-            if (!alreadyOnTile) {
-                const stepUpTile = this.getStepUpTile();
-                if (stepUpTile) {
-                    const tileWorldBounds = stepUpTile.getWorldBounds();
-                    const tileTopY = tileWorldBounds.y;
-                    const stepHeight = tileTopY - charFeetY;
-                    
-                    // Only step up if the step is reasonable (one tile height or less)
-                    const maxStepHeight = 32 + 5; // Tile height + tolerance
-                    if (stepHeight > 0 && stepHeight <= maxStepHeight) {
-                        // Step up onto the tile
-                        const animFrames = this.animations[this.state] || this.animations.idle;
-                        const frameIndex = animFrames[this.currentFrame] || 0;
-                        const frameBounds = this.spriteSheet.frameBounds[frameIndex];
-                        
-                        if (frameBounds) {
-                            let adjustedHeight = frameBounds.height;
-                            if (this.name === 'Steve' && frameIndex === this.animations.idle[0]) {
-                                const alexFrame0Bounds = game.spriteSheets.alex?.frameBounds[0];
-                                if (alexFrame0Bounds && frameBounds.height >= 250) {
-                                    const estimatedBottomPadding = 30;
-                                    adjustedHeight = Math.max(frameBounds.height - estimatedBottomPadding, alexFrame0Bounds.height);
-                                }
+
+            const stepUpTile = this.getStepUpTile();
+            if (stepUpTile) {
+                const tileWorldBounds = stepUpTile.getWorldBounds();
+                const tileTopY = tileWorldBounds.y;
+                // stepHeight is positive when the tile is visually ABOVE the character
+                // (canvas Y-down: smaller tileTopY = higher on screen)
+                const stepHeight = charFeetY - tileTopY;
+
+                // Only step up if the step is reasonable (one tile height or less)
+                const maxStepHeight = 32 + 5; // Tile height + tolerance
+                if (stepHeight > 0 && stepHeight <= maxStepHeight) {
+                    const animFrames = this.animations[this.state] || this.animations.idle;
+                    const frameIndex = animFrames[this.currentFrame] || 0;
+                    const frameBounds = this.spriteSheet.frameBounds[frameIndex];
+                    if (frameBounds) {
+                        let adjustedHeight = frameBounds.height;
+                        if (this.name === 'Steve' && frameIndex === this.animations.idle[0]) {
+                            const alexFrame0Bounds = game.spriteSheets.alex?.frameBounds[0];
+                            if (alexFrame0Bounds && frameBounds.height >= 250) {
+                                const estimatedBottomPadding = 30;
+                                adjustedHeight = Math.max(frameBounds.height - estimatedBottomPadding, alexFrame0Bounds.height);
                             }
-                            const spriteBottomInFrame = frameBounds.offsetY + adjustedHeight;
-                            this.y = tileTopY - (spriteBottomInFrame * this.scale);
-                            this.onGround = true;
-                            this.velocityY = 0;
                         }
+                        const spriteBottomInFrame = frameBounds.offsetY + adjustedHeight;
+                        this.y = tileTopY - (spriteBottomInFrame * this.scale);
+                        this.onGround = true;
+                        this.velocityY = 0;
                     }
                 }
             }
@@ -705,18 +695,36 @@ class Character {
         }
         
         ctx.save();
-        
+
+        const animFrames = this.animations[this.state] || this.animations.idle;
+        const frameIndex = animFrames[this.currentFrame] || 0;
+        const currentFrameBounds = this.spriteSheet.frameBounds[frameIndex];
+        const idleFrameBounds = this.spriteSheet.frameBounds[this.animations.idle[0] ?? 0];
+
+        // Align all frames so their feet land at the same Y as the idle frame.
+        // Without this, frames with different content heights cause the sprite to bob.
+        // Skip for Steve — his idle frame has unreliable detected bounds (near-full-frame height)
+        // so the offset would push him upward instead of helping.
+        let feetAlignOffset = 0;
+        if (this.name !== 'Steve' && currentFrameBounds && idleFrameBounds) {
+            const idleFeetInFrame = idleFrameBounds.offsetY + idleFrameBounds.height;
+            const currentFeetInFrame = currentFrameBounds.offsetY + currentFrameBounds.height;
+            feetAlignOffset = (idleFeetInFrame - currentFeetInFrame) * this.scale;
+        }
+
+        // Apply a small downward offset for Alex when idle
+        // Apply a -2px Y offset for both characters when moving
+        const idleYOffset = this.name === 'Alex' ? (this.velocityX !== 0 ? 4 : 3) : 0;
+
+        const drawY = screenY + idleYOffset + feetAlignOffset;
+
         // Flip horizontally if facing left
         if (this.facing === 'left') {
             ctx.scale(-1, 1);
             ctx.translate(-canvas.width, 0);
-            const animFrames = this.animations[this.state] || this.animations.idle;
-            const frameIndex = animFrames[this.currentFrame] || 0;
-            this.spriteSheet.drawFrame(ctx, frameIndex, canvas.width - screenX - this.width, screenY, this.scale);
+            this.spriteSheet.drawFrame(ctx, frameIndex, canvas.width - screenX - this.width, drawY, this.scale);
         } else {
-            const animFrames = this.animations[this.state] || this.animations.idle;
-            const frameIndex = animFrames[this.currentFrame] || 0;
-            this.spriteSheet.drawFrame(ctx, frameIndex, screenX, screenY, this.scale);
+            this.spriteSheet.drawFrame(ctx, frameIndex, screenX, drawY, this.scale);
         }
         
         ctx.restore();
@@ -884,11 +892,11 @@ class Character {
             
             if (horizontalOverlap && !veryCloseToEdge) continue;
             
-            // Check if tile is above current feet position (step up)
-            // Require a minimum step height to avoid stepping up onto tiles at the same level
-            const stepHeight = tileTopY - charFeetY;
-            const minStepHeight = 2; // Minimum height difference to trigger step-up
-            if (stepHeight >= minStepHeight && stepHeight < bestStepHeight && stepHeight <= 37) { // Max step height
+            // stepHeight is positive when the tile is visually ABOVE the character
+            // (canvas Y-down: smaller tileTopY = higher on screen = step up)
+            const stepHeight = charFeetY - tileTopY;
+            const minStepHeight = 2;
+            if (stepHeight >= minStepHeight && stepHeight < bestStepHeight && stepHeight <= 37) {
                 bestTile = tile;
                 bestStepHeight = stepHeight;
             }
@@ -938,16 +946,17 @@ class Character {
             const movingRight = this.velocityX > 0;
             const movingLeft = this.velocityX < 0;
             
-            // Check if character is moving into the tile from the side
-            const movingIntoFromRight = movingRight && charLeftX < tileRightX && charRightX >= tileLeftX;
-            const movingIntoFromLeft = movingLeft && charRightX > tileLeftX && charLeftX <= tileRightX;
-            
-            // Also check for significant overlap (character is already partially inside the tile)
-            // This handles cases where character is already overlapping but not moving
-            const significantOverlap = horizontalOverlap && 
-                ((charLeftX < tileLeftX + charWorldBounds.width * 0.3) || 
-                 (charRightX > tileRightX - charWorldBounds.width * 0.3));
-            
+            // Check if character is moving into the tile from the correct side only
+            // movingIntoFromRight: char approaches tile from the LEFT (moving right, char left edge just crossing tile left edge)
+            const movingIntoFromRight = movingRight && charLeftX < tileLeftX && charRightX > tileLeftX;
+            // movingIntoFromLeft: char approaches tile from the RIGHT (moving left, char right edge just crossing tile right edge)
+            const movingIntoFromLeft = movingLeft && charRightX > tileRightX && charLeftX < tileRightX;
+
+            // Also check for significant overlap already inside the tile from a specific side
+            const overlapFromLeft = charLeftX < tileLeftX && charRightX > tileLeftX + 4;
+            const overlapFromRight = charRightX > tileRightX && charLeftX < tileRightX - 4;
+            const significantOverlap = overlapFromLeft || overlapFromRight;
+
             // Only block if character is moving into the tile or significantly overlapping
             if (movingIntoFromRight || movingIntoFromLeft || significantOverlap) {
                 collidingTiles.push(tile);
@@ -1552,10 +1561,13 @@ class Chicken {
             screenY + this.height < 0 || screenY > canvas.height) {
             return;
         }
-        
+
+        // Pecking frames sit higher in the sprite sheet — offset down to keep feet planted
+        const peckOffset = this.state === 'pecking' ? 2 : 0;
+
         // Ensure frame index is valid
         if (this.frameIndex >= 0 && this.frameIndex < this.spriteSheet.totalFrames) {
-            this.spriteSheet.drawFrame(ctx, this.frameIndex, screenX, screenY, this.scale);
+            this.spriteSheet.drawFrame(ctx, this.frameIndex, screenX, screenY + peckOffset, this.scale);
         }
     }
     
@@ -1771,9 +1783,10 @@ const characterConfigs = {
         cols: 4,
         rows: 4,
         scale: 0.3,
+        animationSpeed: 14,
         animations: {
             idle: [0],
-            walk: [8,9,10,11],
+            walk: [8, 9, 10, 11],
             jump: [9],
             mine: [8, 9]
         }
