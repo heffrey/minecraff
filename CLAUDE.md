@@ -99,6 +99,28 @@ before a single block was removed). Measure "did the player walk away?" against
 
 Spawned by `spawnHostileMob(type, options)`. Cap: 8 hostile (non-spider) + 4 spiders. On DAWN transition: `hostile && burnsAtDawn` mobs get `burning = true` → flash red 1500ms → `burnedOut = true` → removed in the backwards `for` loop in `gameLoop`.
 
+### Death is a 2.5s window, not an instant
+
+`Mob.die()` does not remove the mob. It sets `isDying = true` and starts a 2.5s
+spin-and-fade; only when that finishes does `burnedOut = true` and the backwards
+loop in `gameLoop` splice it out. So for 2.5 seconds a dead mob is still in
+`game.mobs` — **every mob scan needs `isDying` in its skip condition, not just
+`burnedOut`.** Three places got this wrong:
+
+- **`Mob.takeDamage()` — this one crashed the game.** `createExplosion` damages
+  every non-`burnedOut` mob in radius, and a dying creeper sits at distance 0 of
+  its own blast. Damage → `die()` → `createExplosion` → damage → … recursed
+  until `RangeError: Maximum call stack size exceeded`. Killing *any* creeper
+  killed the game. `takeDamage()` now returns immediately when `isDying ||
+  burnedOut`, and `die()` sets `isDying` **before** calling `createExplosion` so
+  the blast cannot come back around.
+- **`Character.attack()` target scan** — corpses were targetable, so they soaked
+  hits and shielded live mobs standing behind them.
+- **`createExplosion()`** — skips corpses now, so blasts don't fling them about.
+
+`Mob.update()` returns early while `isDying`, so corpses already could not walk
+or attack; that part was fine.
+
 ## Biomes
 
 `getBiome(worldX)` returns string. `getBiomeColors(biome)` returns `{sky, nightSky, ground, grass}`. Cave at `x < -1000`, swamp at `3000–4000`, snow at `x > 4000`.

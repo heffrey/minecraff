@@ -1078,7 +1078,10 @@ class Character {
         // Check mobs
         for (let i = 0; i < game.mobs.length; i++) {
             const mob = game.mobs[i];
-            if (mob.burnedOut) continue;
+            // Skip corpses. A dying mob lingers for the 2.5s death animation,
+            // and while it was still targetable it soaked hits and shielded live
+            // mobs standing behind it.
+            if (mob.burnedOut || mob.isDying) continue;
 
             const mobX = mob.x + mob.width / 2;
             const mobY = mob.y + mob.height / 2;
@@ -1860,6 +1863,13 @@ class Mob {
     }
 
     takeDamage(amount) {
+        // A mob that is already dying or gone absorbs nothing more. This is what
+        // stops a creeper from killing the game: createExplosion damages every
+        // mob in radius, and the creeper sits at distance 0 of its own blast, so
+        // without this guard the blast re-entered takeDamage -> die() ->
+        // createExplosion and recursed until the stack overflowed.
+        if (this.isDying || this.burnedOut) return;
+
         this.health -= amount;
 
         // Pig: become angry when damaged
@@ -1880,6 +1890,14 @@ class Mob {
     }
 
     die() {
+        // Dying once is enough - a second call would re-fire the explosion and
+        // restart the death animation from the top.
+        if (this.isDying || this.burnedOut) return;
+
+        // Marked before the explosion so the blast cannot come back around and
+        // kill this mob a second time.
+        this.isDying = true;
+
         if (this.mobType === 'creeper') {
             // Creeper explodes with damage
             createExplosion(this.x + this.width / 2, this.y + this.height / 2, this.explodeRadius, this.explodeDamage);
@@ -1889,8 +1907,8 @@ class Mob {
             createBloodParticles(this.x + this.width / 2, this.y + this.height / 2, 5);
         }
 
-        // Start death animation: spin and fade out
-        this.isDying = true;
+        // Start death animation: spin and fade out (isDying was set above,
+        // before the explosion, so the blast could not re-kill this mob)
         this.deathStartTime = Date.now();
         this.rotation = 0;
         this.opacity = 1;
@@ -3863,7 +3881,11 @@ function createExplosion(x, y, radius = 100, damage = 5) {
         const dy = mob.y + mob.height / 2 - y;
         const dist = Math.sqrt(dx * dx + dy * dy);
 
-        if (dist < radius && !mob.burnedOut) {
+        // Corpses are skipped outright: the exploding creeper is itself at
+        // distance 0 of this blast, so it would otherwise be its own first
+        // casualty. takeDamage guards this too; this just avoids flinging
+        // corpses around.
+        if (dist < radius && !mob.burnedOut && !mob.isDying) {
             mob.takeDamage(damage);
             // Knockback
             const knockbackDist = 30;
