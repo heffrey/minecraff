@@ -38,10 +38,10 @@
       "attackAnimationSpeed": 0
     },
     "pig": {
-      "health": 10,
-      "damage": 1,
+      "health": 15,
+      "damage": 2,
       "chaseRange": 0,
-      "attackCooldown": 800,
+      "attackCooldown": 600,
       "passive": true
     },
     "chicken": {
