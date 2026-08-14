@@ -12,6 +12,18 @@ const game = {
     chickens: [], // Chickens in the world
     mobs: [], // Mobs in the world (zombies, skeletons, creepers, spiders, slimes, pigs)
     particles: [], // Particle effects (e.g., wood sprites exploding from trees)
+    floatingTexts: [], // Floating text effects (e.g., MISS!)
+    groundHoles: new Set(), // Dug ground cells: keys are "worldGridX,depth"
+    dugMaterials: new Map(), // Map of "worldGridX,depth" -> material name
+    digging: {
+        isDigging: false,
+        targetTileX: -1,
+        targetDepth: 0,
+        direction: 'down', // 'down', 'left', 'right' - for directional digging
+        lastHitTime: 0,
+        hitInterval: 300 // ms between digs
+    },
+    MAX_DIG_DEPTH: Infinity, // Unlimited digging depth
     treeSpawnPoints: [], // Original tree spawn positions for regrowth
     treeRegrowthQueue: [], // Trees waiting to regrow {x, frameIndex, regrowAt}
     placedTiles: [], // Tiles placed in the world (world coordinates)
@@ -264,6 +276,8 @@ class Character {
         this.maxHp = 20;
         this.hp = this.maxHp;
         this.lastDamageTaken = 0;
+        this.regenRate = 0.5; // HP per second when not in combat
+        this.regenDelay = 3000; // ms before regen starts after taking damage
 
         // Attack
         this.attackRange = 60; // pixels
@@ -380,7 +394,15 @@ class Character {
         };
     }
 
-    update() {
+    update(deltaTime) {
+        // Health regeneration: slowly heal when not in combat
+        const timeSinceDamage = Date.now() - this.lastDamageTaken;
+        if (timeSinceDamage > this.regenDelay && this.hp < this.maxHp) {
+            // Regenerate based on deltaTime (assuming deltaTime is in milliseconds)
+            const regenAmount = this.regenRate * (deltaTime || 16) / 1000; // Default 16ms per frame
+            this.hp = Math.min(this.hp + regenAmount, this.maxHp);
+        }
+
         // Apply gravity
         if (!this.onGround) {
             this.velocityY += this.gravity;
@@ -575,7 +597,20 @@ class Character {
         // Skip ground collision check if jumping upward (velocityY < 0) to prevent resetting onGround immediately after jump
         if (!standingOnTile && !(this.state === 'jump' && this.velocityY < 0)) {
             const worldGroundY = canvas.height - 50; // Fixed world ground Y position
-            if (currentFeetY >= worldGroundY) {
+
+            // Calculate effective floor based on ground holes
+            const TILE = 32;
+            const charBounds = this.getWorldBounds();
+            const charCenterX = charBounds.x + charBounds.width / 2;
+            const holeTileX = Math.floor(charCenterX / TILE) * TILE;
+            let floorY = worldGroundY;
+            let depth = 0;
+            while (isGroundHole(holeTileX, depth)) {
+                depth++;
+                floorY = worldGroundY + depth * TILE;
+            }
+
+            if (currentFeetY >= floorY) {
                 const oldY = this.y;
                 // For Steve, use the same adjusted calculation as initial positioning
                 if (this.name === 'Steve') {
@@ -590,12 +625,12 @@ class Character {
                             adjustedHeight = Math.max(steveFrameBounds.height - estimatedBottomPadding, alexFrame0Bounds.height);
                         }
                         const steveSpriteBottom = steveFrameBounds.offsetY + adjustedHeight;
-                        this.y = worldGroundY - (steveSpriteBottom * this.scale);
+                        this.y = floorY - (steveSpriteBottom * this.scale);
                     } else {
-                        this.y = this.getFeetYPosition(worldGroundY);
+                        this.y = this.getFeetYPosition(floorY);
                     }
                 } else {
-                    this.y = this.getFeetYPosition(worldGroundY);
+                    this.y = this.getFeetYPosition(floorY);
                 }
                 this.onGround = true;
                 this.velocityY = 0;
@@ -650,10 +685,23 @@ class Character {
         if ((this.state === 'idle' || this.state === 'walk') && this.velocityY === 0) {
             // Re-check ground collision for idle/walking characters
             const worldGroundY = canvas.height - 50;
+
+            // Calculate effective floor based on ground holes
+            const TILE = 32;
+            const charBounds = this.getWorldBounds();
+            const charCenterX = charBounds.x + charBounds.width / 2;
+            const holeTileX = Math.floor(charCenterX / TILE) * TILE;
+            let floorY = worldGroundY;
+            let depth = 0;
+            while (isGroundHole(holeTileX, depth)) {
+                depth++;
+                floorY = worldGroundY + depth * TILE;
+            }
+
             const animFrames = this.animations[this.state] || this.animations.idle;
             const frameIndex = animFrames[this.currentFrame] || 0;
             const frameBounds = this.spriteSheet.frameBounds[frameIndex];
-            
+
             let currentFeetY;
             if (frameBounds) {
                 let adjustedHeight = frameBounds.height;
@@ -669,10 +717,10 @@ class Character {
             } else {
                 currentFeetY = this.y + this.height;
             }
-            
-            // Check if character is on ground or very close to it (larger tolerance)
-            // If character is idle/walking with no vertical velocity and close to ground, they must be on ground
-            if (currentFeetY >= worldGroundY - 5) { // Larger tolerance for floating point precision
+
+            // Check if character is on floor or very close to it (larger tolerance)
+            // If character is idle/walking with no vertical velocity and close to floor, they must be on ground
+            if (currentFeetY >= floorY - 5) { // Larger tolerance for floating point precision
                 this.onGround = true;
             }
         }
@@ -765,6 +813,7 @@ class Character {
         if (this.state === 'mine') {
             game.mining.isMining = false;
             game.mining.targetTreeIndex = -1;
+            game.digging.isDigging = false;
             this.state = this.onGround ? 'walk' : 'jump';
         } else if (this.state !== 'jump') {
             // Only update state if not already jumping (preserve jump state)
@@ -783,6 +832,7 @@ class Character {
         if (this.state === 'mine') {
             game.mining.isMining = false;
             game.mining.targetTreeIndex = -1;
+            game.digging.isDigging = false;
             this.state = this.onGround ? 'walk' : 'jump';
         } else if (this.state !== 'jump') {
             // Only update state if not already jumping (preserve jump state)
@@ -1006,11 +1056,15 @@ class Character {
 
         this.lastAttackTime = now;
 
-        // Check for mobs in range
         const attackX = this.x + this.width / 2;
         const attackY = this.y + this.height / 2;
 
-        for (let i = game.mobs.length - 1; i >= 0; i--) {
+        // Find the nearest attackable target within range
+        let nearestTarget = null;
+        let nearestDist = this.attackRange;
+
+        // Check mobs
+        for (let i = 0; i < game.mobs.length; i++) {
             const mob = game.mobs[i];
             if (mob.burnedOut) continue;
 
@@ -1020,18 +1074,99 @@ class Character {
             const dy = mobY - attackY;
             const dist = Math.sqrt(dx * dx + dy * dy);
 
-            if (dist < this.attackRange) {
-                mob.takeDamage(this.attackDamage);
+            if (dist < nearestDist) {
+                nearestDist = dist;
+                nearestTarget = { type: 'mob', entity: mob, x: mobX, y: mobY };
+            }
+        }
+
+        // Check chickens
+        for (let i = 0; i < game.chickens.length; i++) {
+            const chicken = game.chickens[i];
+            if (chicken.isDead) continue;
+
+            const chickenX = chicken.x + chicken.width / 2;
+            const chickenY = chicken.y + chicken.height / 2;
+            const dx = chickenX - attackX;
+            const dy = chickenY - attackY;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+
+            if (dist < nearestDist) {
+                nearestDist = dist;
+                nearestTarget = { type: 'chicken', entity: chicken, x: chickenX, y: chickenY };
+            }
+        }
+
+        // Attack only the nearest target
+        if (nearestTarget) {
+            // 25% chance to miss
+            const missChance = 0.25;
+            if (Math.random() < missChance) {
+                // Miss! Show floating text above Steve
+                const missText = new FloatingText(this.x + this.width / 2, this.y - 10, 'MISS!');
+                game.floatingTexts.push(missText);
+
+                // If the target is a pig, it still becomes aggressive on a miss
+                if (nearestTarget.type === 'mob' && nearestTarget.entity.mobType === 'pig') {
+                    nearestTarget.entity.passive = false;
+                    nearestTarget.entity.isAngry = true;
+                }
+            } else {
+                // Hit!
+                const dx = nearestTarget.x - attackX;
+                const dy = nearestTarget.y - attackY;
+                const angle = Math.atan2(dy, dx);
+
+                nearestTarget.entity.takeDamage(this.attackDamage);
 
                 // Knockback
                 const knockbackDist = 15;
-                const angle = Math.atan2(dy, dx);
-                mob.x += Math.cos(angle) * knockbackDist;
+                nearestTarget.entity.x += Math.cos(angle) * knockbackDist;
 
                 // Blood particles
-                createBloodParticles(mobX, mobY, 3);
+                const speedMult = nearestTarget.type === 'chicken' ? 0.6 : 1.0;
+                const upwardBias = nearestTarget.type === 'chicken' ? 1.2 : 0.5;
+                const gravity = nearestTarget.type === 'chicken' ? 0.05 : 0.2;
+                createBloodParticles(nearestTarget.x, nearestTarget.y, 3, speedMult, upwardBias, gravity);
             }
         }
+    }
+}
+
+// Floating Text Class (for miss indicator)
+class FloatingText {
+    constructor(x, y, text) {
+        this.x = x;
+        this.y = y;
+        this.text = text;
+        this.createdAt = Date.now();
+        this.lifetime = 1000; // 1 second
+        this.velocityY = -1; // Float upward
+    }
+
+    update() {
+        this.y += this.velocityY;
+    }
+
+    draw(ctx, cameraX = 0, cameraY = 0) {
+        const screenX = this.x - cameraX;
+        const screenY = this.y - cameraY;
+
+        const elapsed = Date.now() - this.createdAt;
+        const progress = elapsed / this.lifetime;
+        const alpha = Math.max(0, 1 - progress);
+
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = '#FF4444';
+        ctx.font = 'bold 24px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText(this.text, screenX, screenY);
+        ctx.restore();
+    }
+
+    isDone() {
+        return Date.now() - this.createdAt > this.lifetime;
     }
 }
 
@@ -1117,6 +1252,74 @@ class SparkParticle {
     isDead() {
         const elapsed = Date.now() - this.createdAt;
         return elapsed >= this.maxLifetime || this.alpha <= 0 || this.size < 0.5;
+    }
+}
+
+// Dirt Particle Class (for ground digging)
+class DirtParticle {
+    constructor(x, y, materialName) {
+        this.x = x;
+        this.y = y;
+        this.size = 3 + Math.random() * 3; // Random size between 3-6 pixels
+
+        // Physics
+        const angle = Math.random() * Math.PI * 2;
+        const speed = 1.5 + Math.random() * 2.5;
+        this.velocityX = Math.cos(angle) * speed;
+        this.velocityY = Math.sin(angle) * speed - 1.5; // Slight upward bias
+        this.gravity = 0.25;
+
+        // Material colors
+        const MATERIAL_COLORS = {
+            dirt:   ['#8B6914', '#7A5C10'],
+            stone:  ['#808080', '#696969'],
+            sand:   ['#D2B48C', '#C4A882'],
+            clay:   ['#B87333', '#A06828'],
+            iron:   ['#B87333', '#8B6914'],
+            silver: ['#C0C0C0', '#A8A8A8'],
+            gold:   ['#FFD700', '#FFA500'],
+            snow:   ['#FFFFFF', '#E0E0E0'],
+        };
+        const colors = MATERIAL_COLORS[materialName] || MATERIAL_COLORS['dirt'];
+        this.color = colors[Math.floor(Math.random() * colors.length)];
+
+        // Lifecycle
+        this.createdAt = Date.now();
+        this.maxLifetime = 700 + Math.random() * 300;
+        this.alpha = 1.0;
+    }
+
+    update() {
+        // Apply gravity
+        this.velocityY += this.gravity;
+
+        // Update position
+        this.x += this.velocityX;
+        this.y += this.velocityY;
+
+        // Fade out
+        const elapsed = Date.now() - this.createdAt;
+        const fadeStart = this.maxLifetime * 0.4;
+        if (elapsed > fadeStart) {
+            const fadeProgress = (elapsed - fadeStart) / (this.maxLifetime - fadeStart);
+            this.alpha = Math.max(0, 1.0 - fadeProgress);
+        }
+    }
+
+    draw(ctx, cameraX = 0, cameraY = 0) {
+        const screenX = this.x - cameraX;
+        const screenY = this.y - cameraY;
+
+        ctx.save();
+        ctx.globalAlpha = this.alpha;
+        ctx.fillStyle = this.color;
+        ctx.fillRect(screenX - this.size / 2, screenY - this.size / 2, this.size, this.size);
+        ctx.restore();
+    }
+
+    isDead() {
+        const elapsed = Date.now() - this.createdAt;
+        return elapsed >= this.maxLifetime || this.alpha <= 0;
     }
 }
 
@@ -1209,17 +1412,17 @@ class WoodParticle {
 
 // Blood Particle Class (for mob damage/death)
 class BloodParticle {
-    constructor(x, y) {
+    constructor(x, y, speedMultiplier = 1.0, upwardBias = 0.5, gravity = 0.2) {
         this.x = x;
         this.y = y;
         this.size = 3 + Math.random() * 2; // Random size between 3-5 pixels
 
         // Physics - blood splats outward
         const angle = Math.random() * Math.PI * 2; // Random direction
-        const speed = 1.5 + Math.random() * 1.5; // Random speed between 1.5-3
+        const speed = (1.5 + Math.random() * 1.5) * speedMultiplier; // Random speed between 1.5-3, scaled
         this.velocityX = Math.cos(angle) * speed;
-        this.velocityY = Math.sin(angle) * speed - 0.5; // Slight upward bias
-        this.gravity = 0.2;
+        this.velocityY = (Math.sin(angle) * speed - upwardBias) * speedMultiplier; // Upward bias
+        this.gravity = gravity;
 
         // Color - dark red blood
         const colorVariation = Math.random();
@@ -1374,6 +1577,7 @@ class Mob {
         this.explodeRadius = attrs.explodeRadius || 0;
         this.explodeDelay = attrs.explodeDelay || 0;
         this.passive = attrs.passive || false;
+        this.isAngry = false; // For pigs - shows when they're attacking
         this.isExploding = false;
         this.explodeStartTime = 0;
 
@@ -1403,6 +1607,12 @@ class Mob {
         this.burning = false;
         this.burnStart = 0;
         this.burnedOut = false;
+
+        // Death animation
+        this.isDying = false;
+        this.deathStartTime = 0;
+        this.rotation = 0;
+        this.opacity = 1;
     }
 
     updateFrameIndex() {
@@ -1435,7 +1645,55 @@ class Mob {
     update() {
         const currentTime = Date.now();
         const timeSinceStateChange = currentTime - this.lastStateChange;
-        
+
+        // Apply gravity and Y-position updates for jumping
+        const gravity = 0.5;
+        this.velocityY = (this.velocityY || 0) + gravity;
+        this.y += this.velocityY;
+
+        // Keep mobs on ground
+        const worldGroundY = canvas.height - 50;
+        const mobBaseFrame = this.rowIndex * this.spriteSheet.cols;
+        const mobFrameBounds = this.spriteSheet.frameBounds[mobBaseFrame];
+        let groundOffset = 0;
+        if (this.mobType === 'slime') groundOffset = game.mobGroundOffsets['slime'] ?? 15;
+        if (this.mobType === 'spider' || this.mobType === 'pig') groundOffset = game.mobGroundOffsets[this.mobType] ?? 3;
+
+        let groundY = worldGroundY;
+        if (mobFrameBounds) {
+            const spriteBottomInFrame = mobFrameBounds.offsetY + mobFrameBounds.height;
+            groundY = worldGroundY - (spriteBottomInFrame * this.scale) + groundOffset;
+        } else {
+            groundY = worldGroundY - this.height + groundOffset;
+        }
+
+        if (this.y >= groundY) {
+            this.y = groundY;
+            this.velocityY = 0;
+        }
+
+        // Death animation: slow spin and gradual fade over 2.5 seconds
+        if (this.isDying) {
+            const deathDuration = 2500; // 2.5 seconds
+            const elapsed = currentTime - this.deathStartTime;
+            const progress = Math.min(elapsed / deathDuration, 1);
+
+            // Spin slowly: 1 full rotation
+            this.rotation = progress * Math.PI * 2;
+
+            // Fade gradually: opacity decreases
+            this.opacity = 1 - progress;
+
+            // Remove when fully faded
+            if (progress >= 1) {
+                this.burnedOut = true;
+            }
+
+            // Stop normal movement while dying
+            this.velocityX = 0;
+            return; // Skip normal update logic
+        }
+
         // State machine: idle <-> walking
         if (this.state === 'walking') {
             // Update position based on velocity
@@ -1500,8 +1758,8 @@ class Mob {
             }
         }
 
-        // Attack behavior for hostile mobs
-        if (this.hostile && !this.passive && game.characters.length > 0) {
+        // Attack behavior for hostile mobs (except spiders - they have special jump attack)
+        if (this.hostile && !this.passive && this.mobType !== 'spider' && game.characters.length > 0) {
             const char = game.characters[0];
             const dx = char.x + char.width / 2 - (this.x + this.width / 2);
             const dy = char.y + char.height / 2 - (this.y + this.height / 2);
@@ -1528,9 +1786,9 @@ class Mob {
             }
         }
 
-        // Pig passive aggression: attack back if damaged
-        if (this.mobType === 'pig' && this.health < this.maxHealth) {
-            // Pig was hit, now it attacks
+        // Pig passive aggression: attack when angry
+        if (this.mobType === 'pig' && this.isAngry) {
+            // Angry pig attacks
             this.passive = false;
             const char = game.characters[0];
             const dx = char.x + char.width / 2 - (this.x + this.width / 2);
@@ -1547,7 +1805,43 @@ class Mob {
                 const now = Date.now();
                 if (now - this.lastAttackTime > this.attackCooldown) {
                     this.lastAttackTime = now;
+
+                    // Jump at Steve - dramatic upward force
+                    this.velocityY = -4;
+
                     char.takeDamage(this.damage);
+
+                    // Create blood particles on Steve
+                    createBloodParticles(char.x + char.width / 2, char.y + char.height / 2, 4);
+                }
+            }
+        }
+
+        // Spider attack: jump at Steve
+        if (this.mobType === 'spider' && this.hostile) {
+            const char = game.characters[0];
+            const dx = char.x + char.width / 2 - (this.x + this.width / 2);
+            const dy = char.y + char.height / 2 - (this.y + this.height / 2);
+            const distToPlayer = Math.sqrt(dx * dx + dy * dy);
+
+            if (distToPlayer < 80) {
+                this.facing = dx > 0 ? 'right' : 'left';
+                this.velocityX = this.facing === 'right' ? this.walkSpeed : -this.walkSpeed;
+                this.state = 'walking';
+            }
+
+            if (distToPlayer < 50) {
+                const now = Date.now();
+                if (now - this.lastAttackTime > this.attackCooldown) {
+                    this.lastAttackTime = now;
+
+                    // Jump at Steve
+                    this.velocityY = -8;
+
+                    char.takeDamage(this.damage);
+
+                    // Create blood particles on Steve
+                    createBloodParticles(char.x + char.width / 2, char.y + char.height / 2, 3);
                 }
             }
         }
@@ -1555,6 +1849,11 @@ class Mob {
 
     takeDamage(amount) {
         this.health -= amount;
+
+        // Pig: become angry when damaged
+        if (this.mobType === 'pig') {
+            this.isAngry = true;
+        }
 
         // Creeper: start explode timer on first hit
         if (this.mobType === 'creeper' && !this.isExploding && this.health > 0) {
@@ -1569,11 +1868,8 @@ class Mob {
     }
 
     die() {
-        if (this.mobType === 'chicken') {
-            // Large blood burst
-            createBloodParticles(this.x + this.width / 2, this.y + this.height / 2, 12);
-        } else if (this.mobType === 'creeper') {
-            // Explode with damage
+        if (this.mobType === 'creeper') {
+            // Creeper explodes with damage
             createExplosion(this.x + this.width / 2, this.y + this.height / 2, this.explodeRadius, this.explodeDamage);
             createBloodParticles(this.x + this.width / 2, this.y + this.height / 2, 8);
         } else {
@@ -1581,21 +1877,35 @@ class Mob {
             createBloodParticles(this.x + this.width / 2, this.y + this.height / 2, 5);
         }
 
-        this.burnedOut = true; // Mark for removal
+        // Start death animation: spin and fade out
+        this.isDying = true;
+        this.deathStartTime = Date.now();
+        this.rotation = 0;
+        this.opacity = 1;
     }
 
     draw(ctx, cameraX = 0, cameraY = 0) {
         // Convert world coordinates to screen coordinates
         const screenX = this.x - cameraX;
         const screenY = this.y - cameraY;
-        
+
         // Only draw if mob is in viewport
         if (screenX + this.width < 0 || screenX > canvas.width ||
             screenY + this.height < 0 || screenY > canvas.height) {
             return;
         }
-        
+
         ctx.save();
+
+        // Apply death animation: spin and fade
+        if (this.isDying) {
+            const centerX = screenX + this.width / 2;
+            const centerY = screenY + this.height / 2;
+            ctx.translate(centerX, centerY);
+            ctx.rotate(this.rotation);
+            ctx.translate(-centerX, -centerY);
+            ctx.globalAlpha = this.opacity;
+        }
 
         // Flash red while burning (alternate every 100ms)
         if (this.burning && Math.floor(Date.now() / 100) % 2 === 0) {
@@ -1603,6 +1913,12 @@ class Mob {
             ctx.fillRect(screenX, screenY, this.width, this.height);
             ctx.restore();
             return;
+        }
+
+        // Show red tint when pig is angry
+        if (this.isAngry && this.mobType === 'pig') {
+            ctx.fillStyle = 'rgba(220, 0, 0, 0.4)';
+            ctx.fillRect(screenX, screenY, this.width, this.height);
         }
 
         // For slimes, clip the bottom 8 pixels to truncate the sprite
@@ -1715,6 +2031,10 @@ class Chicken {
         this.peckTimer = 0;
         this.peckInterval = 3000 + Math.random() * 2000; // Peck every 3-5 seconds
         this.lastPeckTime = Date.now();
+
+        // Health
+        this.maxHealth = 4; // 2 hits to kill
+        this.health = this.maxHealth;
     }
     
     updateFrameIndex() {
@@ -1823,7 +2143,29 @@ class Chicken {
             this.updateFrameIndex();
         }
     }
-    
+
+    takeDamage(amount) {
+        this.health -= amount;
+        if (this.health <= 0) {
+            this.die();
+        }
+    }
+
+    die() {
+        // MASSIVE EXPLOSION of hilarious gibs - slower speed with more trajectory, reduced gravity
+        const gibCount = 30 + Math.floor(Math.random() * 20); // 30-49 gibs
+        createBloodParticles(this.x + this.width / 2, this.y + this.height / 2, gibCount, 0.6, 1.5, 0.05);
+
+        // Create a big explosion effect
+        createExplosion(this.x + this.width / 2, this.y + this.height / 2, 80, 0);
+
+        // Extra burst of particles for maximum carnage
+        createBloodParticles(this.x + this.width / 2, this.y + this.height / 2, 15, 0.6, 1.5, 0.05);
+
+        // Mark for removal from game.chickens array
+        this.isDead = true;
+    }
+
     draw(ctx, cameraX = 0, cameraY = 0) {
         // Convert world coordinates to screen coordinates
         const screenX = this.x - cameraX;
@@ -2542,12 +2884,12 @@ document.addEventListener('keydown', (e) => {
         const steve = game.characters[0]; // Steve is the first character
         if (!steve) return;
 
-        // First, try to attack mobs in range
+        // First, try to attack mobs or chickens in range
         const steveWorldBounds = steve.getWorldBounds();
         const steveCenterX = steveWorldBounds.x + steveWorldBounds.width / 2;
         const steveCenterY = steveWorldBounds.y + steveWorldBounds.height / 2;
 
-        let mobInRange = false;
+        let targetInRange = false;
         for (const mob of game.mobs) {
             if (mob.burnedOut) continue;
             const mobCenterX = mob.x + mob.width / 2;
@@ -2557,13 +2899,30 @@ document.addEventListener('keydown', (e) => {
             const dist = Math.sqrt(dx * dx + dy * dy);
 
             if (dist < steve.attackRange) {
-                mobInRange = true;
+                targetInRange = true;
                 break;
             }
         }
 
-        if (mobInRange) {
-            // Attack mobs
+        // Also check for chickens in range
+        if (!targetInRange) {
+            for (const chicken of game.chickens) {
+                if (chicken.isDead) continue;
+                const chickenCenterX = chicken.x + chicken.width / 2;
+                const chickenCenterY = chicken.y + chicken.height / 2;
+                const dx = chickenCenterX - steveCenterX;
+                const dy = chickenCenterY - steveCenterY;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+
+                if (dist < steve.attackRange) {
+                    targetInRange = true;
+                    break;
+                }
+            }
+        }
+
+        if (targetInRange) {
+            // Attack mobs or chickens
             steve.attack();
         } else {
             // No mobs in range, try mining trees
@@ -2597,10 +2956,72 @@ document.addEventListener('keydown', (e) => {
                 game.mining.targetTreeIndex = nearestTreeIndex;
                 game.mining.lastHitTime = Date.now();
                 steve.state = 'mine';
+            } else {
+                // No tree found, try ground digging
+                const TILE = 32;
+                const charCenterX = steveWorldBounds.x + steveWorldBounds.width / 2;
+                const holeTileX = Math.floor(charCenterX / TILE) * TILE;
+                const worldGroundY = canvas.height - 50;
+
+                // Check for directional input
+                const isUpPressed = game.keys['ArrowUp'] || game.keys['w'] || game.keys['W'];
+                const isDownPressed = game.keys['ArrowDown'] || game.keys['s'] || game.keys['S'];
+                const isLeftPressed = game.keys['ArrowLeft'] || game.keys['a'] || game.keys['A'];
+                const isRightPressed = game.keys['ArrowRight'] || game.keys['d'] || game.keys['D'];
+                const hasDirection = isUpPressed || isDownPressed || isLeftPressed || isRightPressed;
+
+                let targetTileX = holeTileX;
+                let targetDepth = -1;
+                let direction = 'down';
+
+                if (hasDirection) {
+                    // Find shallowest dug position to determine current depth
+                    let currentDepth = 0;
+                    for (let d = 0; d < 50; d++) {
+                        if (isGroundHole(holeTileX, d)) {
+                            currentDepth = d + 1;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    if (isLeftPressed && !isDownPressed) {
+                        // Dig left
+                        targetTileX = holeTileX - TILE;
+                        targetDepth = Math.max(0, currentDepth - 1);
+                        direction = 'left';
+                    } else if (isRightPressed && !isDownPressed) {
+                        // Dig right
+                        targetTileX = holeTileX + TILE;
+                        targetDepth = Math.max(0, currentDepth - 1);
+                        direction = 'right';
+                    } else if (isDownPressed || (!isLeftPressed && !isRightPressed && !isUpPressed)) {
+                        // Dig down (default if no direction or Down is pressed)
+                        targetTileX = holeTileX;
+                        // Find first non-dug depth below Steve
+                        for (let d = 0; d < 50; d++) {
+                            if (!isGroundHole(holeTileX, d)) {
+                                targetDepth = d;
+                                break;
+                            }
+                        }
+                        direction = 'down';
+                    }
+
+                    // Start digging if target is valid
+                    if (targetDepth >= 0 && !isGroundHole(targetTileX, targetDepth)) {
+                        game.digging.isDigging = true;
+                        game.digging.targetTileX = targetTileX;
+                        game.digging.targetDepth = targetDepth;
+                        game.digging.direction = direction;
+                        game.digging.lastHitTime = Date.now();
+                        steve.state = 'mine';
+                    }
+                }
             }
         }
     }
-    
+
     // Toggle inventory display (I key)
     if (e.key === 'i' || e.key === 'I') {
         game.showInventory = !game.showInventory;
@@ -2941,6 +3362,191 @@ function spawnTreesInArea(startX, endX, worldGroundY) {
     }
 }
 
+// Ground digging helpers and materials
+const GROUND_MATERIALS = {
+    'default': ['dirt',  'dirt',  'stone'],
+    'cave':    ['stone', 'iron',  'silver'],
+    'sand':    ['sand',  'sand',  'stone'],
+    'swamp':   ['clay',  'dirt',  'stone'],
+    'snow':    ['snow',  'dirt',  'stone'],
+};
+
+// Material name to sprite frame index in materials.png
+const MATERIAL_FRAMES = {
+    dirt: 0,
+    wood: 1,
+    clay: 2,
+    stone: 3,
+    iron: 4,
+    silver: 5,
+    gold: 6,
+    sand: 7,
+    snow: 8
+};
+
+function groundHoleKey(worldGridX, depth) {
+    return `${worldGridX},${depth}`;
+}
+
+function isGroundHole(worldGridX, depth) {
+    return game.groundHoles.has(groundHoleKey(worldGridX, depth));
+}
+
+function digGroundHole(worldGridX, depth, material) {
+    game.groundHoles.add(groundHoleKey(worldGridX, depth));
+
+    // Store material info for lazy tile creation
+    if (material) {
+        const key = `${worldGridX},${depth}`;
+        if (!game.dugMaterials) game.dugMaterials = new Map();
+        game.dugMaterials.set(key, material);
+    }
+}
+
+function getGroundMaterial(biome, depth) {
+    const list = GROUND_MATERIALS[biome] || GROUND_MATERIALS['default'];
+    return list[Math.min(depth, list.length - 1)];
+}
+
+function spawnDigParticles(x, y, materialName, count = 6) {
+    for (let i = 0; i < count; i++) {
+        game.particles.push(new DirtParticle(x, y, materialName));
+    }
+}
+
+// Seeded random for consistent world generation
+function seededRandom(seed) {
+    const x = Math.sin(seed) * 10000;
+    return x - Math.floor(x);
+}
+
+function drawGroundWithHoles(ctx, biomeColors, screenGroundY, skyColor) {
+    const TILE = 32;
+    const worldGroundY = canvas.height - 50;
+    const startWorldX = Math.floor(game.camera.x / TILE) * TILE;
+    const endWorldX = startWorldX + canvas.width + TILE;
+
+    // Material colors by depth
+    const MATERIAL_COLORS_BY_DEPTH = {
+        0: {  // Surface (grass)
+            dirt:   '#228B22',  // Green
+            stone:  '#808080',  // Gray
+            sand:   '#D2B48C',  // Tan
+            clay:   '#A0826D',  // Brown
+            iron:   '#A9A9A9',  // Dark gray
+            silver: '#C0C0C0',  // Silver
+            gold:   '#DAA520',  // Goldenrod
+            snow:   '#F0F8FF',  // Alice blue
+        },
+        1: {  // Mid layer (brown)
+            dirt:   '#8B4513',  // Saddle brown
+            stone:  '#8B4513',  // Saddle brown
+            sand:   '#8B4513',  // Saddle brown
+            clay:   '#8B4513',  // Saddle brown
+            iron:   '#8B4513',  // Saddle brown
+            silver: '#8B4513',  // Saddle brown
+            gold:   '#8B4513',  // Saddle brown
+            snow:   '#8B4513',  // Saddle brown
+        },
+        2: {  // Deep layer (darker gray/stone)
+            dirt:   '#505050',  // Dark gray
+            stone:  '#505050',  // Dark gray
+            sand:   '#505050',  // Dark gray
+            clay:   '#505050',  // Dark gray
+            iron:   '#505050',  // Dark gray
+            silver: '#505050',  // Dark gray
+            gold:   '#505050',  // Dark gray
+            snow:   '#505050',  // Dark gray
+        }
+    };
+
+    // Color variations for each depth
+    const COLOR_VARIATIONS = {
+        0: ['#1a7a1a', '#228B22', '#2d9d2d'],  // Green variations
+        1: ['#7a3d0a', '#8B4513', '#9d5520'],  // Brown variations
+        2: ['#404040', '#505050', '#606060']   // Gray variations
+    };
+
+    // Draw vertical strips for each tile column
+    for (let worldX = startWorldX; worldX <= endWorldX; worldX += TILE) {
+        const screenX = worldX - game.camera.x;
+        const biome = getBiome(worldX + TILE / 2);
+
+        // Draw ground layers (render up to 50 layers to support deep digging)
+        for (let depth = 0; depth < 50; depth++) {
+            const screenY = screenGroundY + (depth * TILE);
+            const layerHeight = TILE;
+
+            // Check if this position is dug out
+            if (!isGroundHole(worldX, depth)) {
+                // Get base material and color
+                const material = getGroundMaterial(biome, depth);
+
+                // Generate color based on depth: surface green -> brown -> dark gray -> almost black
+                let baseColor = '#808080';
+                if (depth === 0) {
+                    baseColor = MATERIAL_COLORS_BY_DEPTH[0][material] || '#228B22';
+                } else if (depth === 1) {
+                    baseColor = MATERIAL_COLORS_BY_DEPTH[1][material] || '#8B4513';
+                } else {
+                    // Deeper layers: reach near-black by depth ~10
+                    const depthFactor = Math.min((depth - 1) / 9, 1); // 0 at depth 1, 1 at depth 10+
+                    const darkened = Math.round(80 - depthFactor * 75); // 80 down to ~5
+                    baseColor = `#${darkened.toString(16).padStart(2, '0')}${darkened.toString(16).padStart(2, '0')}${darkened.toString(16).padStart(2, '0')}`;
+                }
+
+                // Use seeded random for consistent generation
+                const seed = worldX + (depth * 1000);
+                const rand = seededRandom(seed);
+
+                // Apply color variations
+                let color = baseColor;
+                if (rand < 0.15) {
+                    // Darker variation (add more shadow)
+                    const darkerVal = Math.max(0, parseInt(baseColor.slice(1), 16) - 0x1a1a1a).toString(16).padStart(6, '0');
+                    color = '#' + darkerVal;
+                } else if (rand < 0.25) {
+                    // Lighter variation
+                    const lighterVal = Math.min(0xffffff, parseInt(baseColor.slice(1), 16) + 0x2a2a2a).toString(16).padStart(6, '0');
+                    color = '#' + lighterVal;
+                }
+
+                ctx.fillStyle = color;
+                ctx.fillRect(screenX, screenY, TILE, layerHeight);
+
+                // Randomly draw rocks/stones (more frequent in deeper layers)
+                const rockChance = 0.1 + (depth * 0.02); // 10% base + 2% per depth
+                const rockSeed = seededRandom(seed + 500);
+                if (rockSeed < Math.min(rockChance, 0.5)) {
+                    const rockSize = 6 + (rockSeed * 10);
+                    const rockX = screenX + ((rockSeed * 1000) % (TILE - rockSize));
+                    const rockY = screenY + (((rockSeed * 7919) % TILE) - rockSize / 2);
+                    ctx.fillStyle = 'rgba(0,0,0,0.4)';
+                    ctx.fillRect(rockX, Math.max(screenY, rockY), rockSize, rockSize);
+                }
+            } else {
+                // Dug out - fill with sky color
+                ctx.fillStyle = skyColor;
+                ctx.fillRect(screenX, screenY, TILE, layerHeight);
+            }
+        }
+    }
+
+    // Draw grid lines to show depth divisions
+    ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+    ctx.lineWidth = 1;
+    for (let worldX = startWorldX; worldX <= endWorldX; worldX += TILE) {
+        const screenX = worldX - game.camera.x;
+        for (let depth = 0; depth <= 50; depth++) {
+            const screenY = screenGroundY + (depth * TILE);
+            ctx.beginPath();
+            ctx.moveTo(screenX, screenY);
+            ctx.lineTo(screenX + TILE, screenY);
+            ctx.stroke();
+        }
+    }
+}
+
 // Get biome based on world X position
 function getBiome(worldX) {
     if (worldX <= -1000)       return 'cave';
@@ -3035,6 +3641,8 @@ function saveGame() {
         const gameState = {
             inventory: game.inventory,
             placedTiles: game.placedTiles.map(tile => tile.toJSON()),
+            dugMaterials: Object.fromEntries(game.dugMaterials), // Convert Map to Object
+            groundHoles: [...game.groundHoles], // Convert Set to Array
             camera: game.camera,
             version: 1 // For future compatibility
         };
@@ -3069,12 +3677,24 @@ function loadGame() {
         
         // Restore placed tiles
         if (gameState.placedTiles && game.spriteSheets['materials']) {
-            game.placedTiles = gameState.placedTiles.map(tileData => 
+            game.placedTiles = gameState.placedTiles.map(tileData =>
                 Tile.fromJSON(tileData, game.spriteSheets['materials'])
             );
             console.log(`Loaded ${game.placedTiles.length} placed tiles`);
         }
-        
+
+        // Restore dug materials
+        if (gameState.dugMaterials) {
+            game.dugMaterials = new Map(Object.entries(gameState.dugMaterials));
+            console.log(`Loaded ${game.dugMaterials.size} dug material blocks`);
+        }
+
+        // Restore ground holes
+        if (gameState.groundHoles) {
+            game.groundHoles = new Set(gameState.groundHoles);
+            console.log(`Loaded ${game.groundHoles.size} ground holes`);
+        }
+
         console.log('Game loaded!');
         return true;
     } catch (error) {
@@ -3139,14 +3759,72 @@ function spawnHostileMob(mobType, options = {}) {
     game.mobs.push(mob);
 }
 
+// Spawn a chicken
+function spawnChicken() {
+    if (!game.spriteSheets.chickens) return;
+
+    const worldGroundY = canvas.height - 50;
+    const spawnX = Math.random() * 800 + 100; // Spawn between x=100-900
+    const colors = ['white', 'red'];
+    const facings = ['left', 'right'];
+    const color = colors[Math.floor(Math.random() * colors.length)];
+    const facing = facings[Math.floor(Math.random() * facings.length)];
+
+    const chicken = new Chicken(game.spriteSheets.chickens, spawnX, 0, color, facing);
+
+    const referenceFrameBounds = game.spriteSheets.chickens.frameBounds[0];
+    if (referenceFrameBounds) {
+        const spriteBottomInFrame = referenceFrameBounds.offsetY + referenceFrameBounds.height;
+        const groundOffset = 3;
+        chicken.y = worldGroundY - (spriteBottomInFrame * chicken.scale) + groundOffset;
+    } else {
+        const feetOffset = 5;
+        chicken.y = worldGroundY - chicken.height + feetOffset;
+    }
+
+    game.chickens.push(chicken);
+}
+
+// Spawn a pig
+function spawnPig() {
+    if (!game.spriteSheets.mobs) return;
+
+    const worldGroundY = canvas.height - 50;
+    const spawnX = Math.random() * 800 + 100; // Spawn between x=100-900
+    const facings = ['left', 'right'];
+    const facing = facings[Math.floor(Math.random() * facings.length)];
+
+    const pig = new Mob(game.spriteSheets.mobs, spawnX, 0, 'pig', facing);
+    pig.passive = true;
+
+    const mobBaseFrame = pig.rowIndex * game.spriteSheets.mobs.cols;
+    const pigFrameBounds = game.spriteSheets.mobs.frameBounds[mobBaseFrame];
+    const groundOffset = game.mobGroundOffsets['pig'] ?? 3;
+
+    if (pigFrameBounds) {
+        const spriteBottomInFrame = pigFrameBounds.offsetY + pigFrameBounds.height;
+        pig.y = worldGroundY - (spriteBottomInFrame * pig.scale) + groundOffset;
+    } else {
+        pig.y = worldGroundY - pig.height + groundOffset;
+    }
+
+    game.mobs.push(pig);
+}
+
 // Auto-save periodically
 let lastAutoSave = Date.now();
 const AUTO_SAVE_INTERVAL = 30000; // Auto-save every 30 seconds
 
+// Respawn tracking
+let lastRespawnCheck = Date.now();
+const RESPAWN_CHECK_INTERVAL = 5000; // Check respawn every 5 seconds
+const CHICKEN_TARGET = 3; // Maintain at least 3 chickens
+const PIG_TARGET = 2; // Maintain at least 2 pigs
+
 // Create blood particles at a location
-function createBloodParticles(x, y, count = 5) {
+function createBloodParticles(x, y, count = 5, speedMultiplier = 1.0, upwardBias = 0.5, gravity = 0.2) {
     for (let i = 0; i < count; i++) {
-        const particle = new BloodParticle(x, y);
+        const particle = new BloodParticle(x, y, speedMultiplier, upwardBias, gravity);
         game.particles.push(particle);
     }
 }
@@ -3195,6 +3873,9 @@ function createExplosion(x, y, radius = 100, damage = 5) {
 
 // Game loop
 function gameLoop(timestamp) {
+    // Current time
+    const now = Date.now();
+
     // Delta time
     if (game.dayNight.lastTimestamp === null) {
         game.dayNight.lastTimestamp = timestamp;
@@ -3311,6 +3992,21 @@ function gameLoop(timestamp) {
         for (let i = 0; i < count; i++) spawnHostileMob('spider');
     }
 
+    // Passive mob respawning: maintain target populations
+    if (now - lastRespawnCheck > RESPAWN_CHECK_INTERVAL) {
+        lastRespawnCheck = now;
+
+        // Respawn chickens if below target
+        while (game.chickens.length < CHICKEN_TARGET) {
+            spawnChicken();
+        }
+
+        // Respawn pigs if below target
+        while (game.mobs.filter(m => m.mobType === 'pig').length < PIG_TARGET) {
+            spawnPig();
+        }
+    }
+
     // Compute sky color based on day/night phase
     const SUNSET_COLOR = '#e85d3a';
     let skyColor;
@@ -3363,14 +4059,9 @@ function gameLoop(timestamp) {
     // Ground is at fixed world Y position, convert to screen coordinates
     const worldGroundY = canvas.height - 50; // Fixed world ground Y position
     const screenGroundY = worldGroundY - game.camera.y; // Convert to screen coordinates
-    
-    // Draw ground across the visible viewport (extend beyond viewport if needed)
-    // Draw from left edge of viewport to right edge, accounting for camera X
-    const groundStartX = -game.camera.x % 100; // Offset for seamless tiling if we add texture later
-    ctx.fillStyle = biomeColors.ground;
-    ctx.fillRect(0, screenGroundY, canvas.width, 50);
-    ctx.fillStyle = biomeColors.grass;
-    ctx.fillRect(0, screenGroundY, canvas.width, 10);
+
+    // Draw ground with holes where dug
+    drawGroundWithHoles(ctx, biomeColors, screenGroundY, skyColor);
     
     // Check for trees that should regrow
     const currentTime = Date.now();
@@ -3454,7 +4145,30 @@ function gameLoop(timestamp) {
             tile.draw(ctx, game.camera.x, game.camera.y);
         }
     });
-    
+
+    // Draw dug tiles (material blocks from underground)
+    if (game.spriteSheets['materials']) {
+        for (const [key, material] of game.dugMaterials) {
+            const [worldGridXStr, depthStr] = key.split(',');
+            const worldGridX = parseInt(worldGridXStr);
+            const depth = parseInt(depthStr);
+            const frameIndex = MATERIAL_FRAMES[material] || 0;
+            const worldGroundY = canvas.height - 50;
+            const tileY = worldGroundY + depth * 32;
+
+            const tile = new Tile(game.spriteSheets['materials'], worldGridX, tileY, frameIndex, material);
+            const worldBounds = tile.getWorldBounds();
+
+            // Check if tile is in viewport
+            if (worldBounds.x + worldBounds.width >= game.camera.x &&
+                worldBounds.x <= game.camera.x + canvas.width &&
+                worldBounds.y + worldBounds.height >= game.camera.y &&
+                worldBounds.y <= game.camera.y + canvas.height) {
+                tile.draw(ctx, game.camera.x, game.camera.y);
+            }
+        }
+    }
+
     // Update and draw mobs — iterate backwards to allow splice
     for (let i = game.mobs.length - 1; i >= 0; i--) {
         const mob = game.mobs[i];
@@ -3483,7 +4197,16 @@ function gameLoop(timestamp) {
     }
     
     // Update and draw chickens (before trees, so trees appear on top)
-    game.chickens.forEach(chicken => {
+    for (let i = game.chickens.length - 1; i >= 0; i--) {
+        const chicken = game.chickens[i];
+
+        // Remove dead chickens
+        if (chicken.isDead) {
+            createBloodParticles(chicken.x + chicken.width / 2, chicken.y + chicken.height / 2, 8, 0.6, 1.5, 0.05);
+            game.chickens.splice(i, 1);
+            continue;
+        }
+
         chicken.update();
         const chickenWorldBounds = chicken.getWorldBounds();
         // Only draw if chicken is in viewport
@@ -3493,7 +4216,7 @@ function gameLoop(timestamp) {
             chickenWorldBounds.y <= game.camera.y + canvas.height) {
             chicken.draw(ctx, game.camera.x, game.camera.y);
         }
-        
+
         // Draw bounding boxes in debug mode
         if (game.debugMode) {
             const bounds = chicken.getBounds(game.camera.x, game.camera.y);
@@ -3501,7 +4224,7 @@ function gameLoop(timestamp) {
             ctx.lineWidth = 2;
             ctx.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
         }
-    });
+    }
     
     // Draw trees (only those in viewport)
     game.trees.forEach((tree, index) => {
@@ -3559,69 +4282,181 @@ function gameLoop(timestamp) {
             ctx.fillText('Press E to chop', textX, textY);
         }
     });
-    
+
+    // Show dig hint if on ground and no trees in range
+    if (steve && steve.onGround && nearestTreeIndex === -1) {
+        const TILE = 32;
+        const steveWorldBounds = steve.getWorldBounds();
+        const charCenterX = steveWorldBounds.x + steveWorldBounds.width / 2;
+        const holeTileX = Math.floor(charCenterX / TILE) * TILE;
+        const worldGroundY = canvas.height - 50;
+
+        // Check if we can dig deeper
+        const canDigDeeper = !isGroundHole(holeTileX, 0) ||
+                             !isGroundHole(holeTileX, 1) ||
+                             !isGroundHole(holeTileX, 2);
+
+        if (canDigDeeper) {
+            const screenX = steveWorldBounds.x - game.camera.x + steveWorldBounds.width / 2;
+            const screenY = steveWorldBounds.y - game.camera.y - 20;
+            ctx.fillStyle = 'rgba(255,255,255,0.9)';
+            ctx.strokeStyle = '#000';
+            ctx.lineWidth = 2;
+            ctx.font = '12px monospace';
+            ctx.textAlign = 'center';
+            ctx.strokeText('Press E to dig', screenX, screenY);
+            ctx.fillText('Press E to dig', screenX, screenY);
+        }
+    }
+
     // Update and draw particles (after trees, before characters)
     for (let i = game.particles.length - 1; i >= 0; i--) {
         const particle = game.particles[i];
         particle.update();
         // Pass camera offset to convert world coordinates to screen coordinates
         particle.draw(ctx, game.camera.x, game.camera.y);
-        
+
         // Remove dead particles
         if (particle.isDead()) {
             game.particles.splice(i, 1);
         }
     }
-    
+
+    // Update and draw floating texts
+    for (let i = game.floatingTexts.length - 1; i >= 0; i--) {
+        const floatingText = game.floatingTexts[i];
+        floatingText.update();
+        floatingText.draw(ctx, game.camera.x, game.camera.y);
+
+        // Remove expired texts
+        if (floatingText.isDone()) {
+            game.floatingTexts.splice(i, 1);
+        }
+    }
+
     // Handle continuous mining
     const isEPressed = game.keys['e'] || game.keys['E'];
-    
+
     // If E is pressed but we're not mining, try to start mining
+    // But don't start mining if there's a mob in range - prioritize combat
     if (isEPressed && !game.mining.isMining && steve) {
-        // Find the nearest tree to Steve
-        let nearestTree = null;
-        let nearestDistance = Infinity;
-        let nearestTreeIndex = -1;
-        
-        for (let i = 0; i < game.trees.length; i++) {
-            const tree = game.trees[i];
-            if (steve.isNearTree(tree)) {
-                const steveWorldBounds = steve.getWorldBounds();
-                const steveCenterX = steveWorldBounds.x + steveWorldBounds.width / 2;
-                const steveCenterY = steveWorldBounds.y + steveWorldBounds.height / 2;
-                const treeWorldBounds = tree.getWorldBounds();
-                const treeCenterX = treeWorldBounds.x + treeWorldBounds.width / 2;
-                const treeCenterY = treeWorldBounds.y + treeWorldBounds.height / 2;
-                
-                const dx = steveCenterX - treeCenterX;
-                const dy = steveCenterY - treeCenterY;
-                const distance = Math.sqrt(dx * dx + dy * dy);
-                
-                if (distance < nearestDistance) {
-                    nearestDistance = distance;
-                    nearestTree = tree;
-                    nearestTreeIndex = i;
+        // Check if there's a mob/creature in attack range
+        let mobInRange = false;
+        const steveWorldBounds = steve.getWorldBounds();
+        const steveCenterX = steveWorldBounds.x + steveWorldBounds.width / 2;
+        const steveCenterY = steveWorldBounds.y + steveWorldBounds.height / 2;
+
+        for (const mob of game.mobs) {
+            if (mob.burnedOut) continue;
+            const mobCenterX = mob.x + mob.width / 2;
+            const mobCenterY = mob.y + mob.height / 2;
+            const dx = mobCenterX - steveCenterX;
+            const dy = mobCenterY - steveCenterY;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+
+            if (dist < steve.attackRange) {
+                mobInRange = true;
+                break;
+            }
+        }
+
+        // Check for chickens in range
+        if (!mobInRange) {
+            for (const chicken of game.chickens) {
+                if (chicken.isDead) continue;
+                const chickenCenterX = chicken.x + chicken.width / 2;
+                const chickenCenterY = chicken.y + chicken.height / 2;
+                const dx = chickenCenterX - steveCenterX;
+                const dy = chickenCenterY - steveCenterY;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+
+                if (dist < steve.attackRange) {
+                    mobInRange = true;
+                    break;
                 }
             }
         }
-        
-        if (nearestTree) {
-            // Start mining - set state and track target tree
-            game.mining.isMining = true;
-            game.mining.targetTreeIndex = nearestTreeIndex;
-            game.mining.lastHitTime = Date.now();
-            steve.state = 'mine';
+
+        // Only start mining if there's no mob in range
+        if (!mobInRange) {
+            // Find the nearest tree to Steve
+            let nearestTree = null;
+            let nearestDistance = Infinity;
+            let nearestTreeIndex = -1;
+
+            for (let i = 0; i < game.trees.length; i++) {
+                const tree = game.trees[i];
+                if (steve.isNearTree(tree)) {
+                    const treeWorldBounds = tree.getWorldBounds();
+                    const treeCenterX = treeWorldBounds.x + treeWorldBounds.width / 2;
+                    const treeCenterY = treeWorldBounds.y + treeWorldBounds.height / 2;
+
+                    const dx = steveCenterX - treeCenterX;
+                    const dy = steveCenterY - treeCenterY;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+
+                    if (distance < nearestDistance) {
+                        nearestDistance = distance;
+                        nearestTree = tree;
+                        nearestTreeIndex = i;
+                    }
+                }
+            }
+
+            if (nearestTree) {
+                // Start mining - set state and track target tree
+                game.mining.isMining = true;
+                game.mining.targetTreeIndex = nearestTreeIndex;
+                game.mining.lastHitTime = Date.now();
+                steve.state = 'mine';
+            }
         }
     }
     
     // Continue mining if E is held and we have a target
     if (game.mining.isMining && game.mining.targetTreeIndex >= 0 && isEPressed) {
         const targetTreeIndex = game.mining.targetTreeIndex;
-        
-        // Check if target tree still exists and Steve is still near it
-        if (targetTreeIndex < game.trees.length && steve) {
+
+        // Check if there's a mob in range - if so, stop mining and let combat take priority
+        let mobInRange = false;
+        const steveWorldBounds = steve.getWorldBounds();
+        const steveCenterX = steveWorldBounds.x + steveWorldBounds.width / 2;
+        const steveCenterY = steveWorldBounds.y + steveWorldBounds.height / 2;
+
+        for (const mob of game.mobs) {
+            if (mob.burnedOut) continue;
+            const mobCenterX = mob.x + mob.width / 2;
+            const mobCenterY = mob.y + mob.height / 2;
+            const dx = mobCenterX - steveCenterX;
+            const dy = mobCenterY - steveCenterY;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+
+            if (dist < steve.attackRange) {
+                mobInRange = true;
+                break;
+            }
+        }
+
+        if (!mobInRange) {
+            for (const chicken of game.chickens) {
+                if (chicken.isDead) continue;
+                const chickenCenterX = chicken.x + chicken.width / 2;
+                const chickenCenterY = chicken.y + chicken.height / 2;
+                const dx = chickenCenterX - steveCenterX;
+                const dy = chickenCenterY - steveCenterY;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+
+                if (dist < steve.attackRange) {
+                    mobInRange = true;
+                    break;
+                }
+            }
+        }
+
+        // Only continue mining if no mob is in range
+        if (!mobInRange && targetTreeIndex < game.trees.length && steve) {
             const targetTree = game.trees[targetTreeIndex];
-            
+
             if (steve.isNearTree(targetTree)) {
                 // Check if enough time has passed since last hit
                 const currentTime = Date.now();
@@ -3717,7 +4552,7 @@ function gameLoop(timestamp) {
                 }
             }
         } else {
-            // Tree was removed or invalid index, stop mining
+            // Stop mining if mob in range, or tree was removed, or steve moved away
             game.mining.isMining = false;
             game.mining.targetTreeIndex = -1;
             if (steve && steve.state === 'mine') {
@@ -3732,10 +4567,80 @@ function gameLoop(timestamp) {
             steve.state = 'idle';
         }
     }
-    
+
+    // Continue ground digging if E is held
+    if (game.digging.isDigging && game.digging.targetTileX >= 0 && isEPressed && steve) {
+        const now = Date.now();
+        const { targetTileX, targetDepth } = game.digging;
+
+        // Check if Steve moved away or if mob came into range
+        const steveWorldBounds = steve.getWorldBounds();
+        const charCenterX = steveWorldBounds.x + steveWorldBounds.width / 2;
+        const TILE = 32;
+        const currentTileX = Math.floor(charCenterX / TILE) * TILE;
+
+        // Check for mob in range while digging
+        let mobInRange = false;
+        for (const mob of game.mobs) {
+            if (mob.burnedOut) continue;
+            const mobCenterX = mob.x + mob.width / 2;
+            const mobCenterY = mob.y + mob.height / 2;
+            const dx = mobCenterX - charCenterX;
+            const dy = mobCenterY - steveWorldBounds.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist < steve.attackRange) {
+                mobInRange = true;
+                break;
+            }
+        }
+
+        if (currentTileX !== targetTileX || mobInRange) {
+            // Abort digging - moved away or mob came in range
+            game.digging.isDigging = false;
+            if (steve.state === 'mine') steve.state = 'idle';
+        } else if (now - game.digging.lastHitTime >= game.digging.hitInterval) {
+            // Time to dig!
+            const biome = getBiome(targetTileX + TILE / 2);
+            const material = getGroundMaterial(biome, targetDepth);
+
+            // Add to inventory
+            game.inventory[material] = (game.inventory[material] || 0) + 1;
+
+            // Create the hole with visual tile
+            digGroundHole(targetTileX, targetDepth, material);
+
+            // Particle effect
+            const worldGroundY = canvas.height - 50;
+            spawnDigParticles(targetTileX + TILE / 2, worldGroundY + targetDepth * TILE + TILE / 2, material, 8);
+
+            // Move to next target based on direction
+            const direction = game.digging.direction;
+            if (direction === 'down') {
+                // Dig next layer down
+                game.digging.targetDepth++;
+            } else if (direction === 'left') {
+                // Dig next layer down at same X (or continue down current column)
+                game.digging.targetDepth++;
+            } else if (direction === 'right') {
+                // Dig next layer down at same X (or continue down current column)
+                game.digging.targetDepth++;
+            }
+
+            // Reset timer to continue digging
+            game.digging.lastHitTime = now;
+
+            // Save progress
+            saveGame();
+        }
+    } else if (!isEPressed && game.digging.isDigging) {
+        // E key released, stop digging
+        game.digging.isDigging = false;
+        if (steve && steve.state === 'mine') steve.state = 'idle';
+    }
+
     // Update and draw characters
     game.characters.forEach(character => {
-        character.update();
+        character.update(deltaMs);
         character.draw(ctx, game.camera.x, game.camera.y);
         
         // Draw bounding boxes in debug mode
@@ -3778,11 +4683,26 @@ function gameLoop(timestamp) {
         ctx.lineWidth = 2;
         ctx.strokeRect(barX, barY, barWidth, barHeight);
 
-        // Text
-        ctx.fillStyle = '#ffffff';
+        // Text with shimmer effect (visible on light and dark backgrounds)
+        const hpText = `HP: ${Math.ceil(char.hp)}/${char.maxHp}`;
+        const textX = barX + 5;
+        const textY = barY + 16;
+
         ctx.font = '14px monospace';
         ctx.textAlign = 'left';
-        ctx.fillText(`HP: ${Math.ceil(char.hp)}/${char.maxHp}`, barX + 5, barY + 16);
+
+        // Shadow for visibility on light backgrounds
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+        ctx.fillText(hpText, textX + 1, textY + 1);
+
+        // Stroke for visibility on dark backgrounds
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 2;
+        ctx.strokeText(hpText, textX, textY);
+
+        // Main white text
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(hpText, textX, textY);
     }
 
     // Draw inventory UI

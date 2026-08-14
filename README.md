@@ -9,10 +9,13 @@ A 2D browser-based adventure game featuring Alex and Steve. Chop trees, collect 
 - **Night Enemies**: Zombies, skeletons, and creepers spawn at night and burn at dawn
 - **Biomes**: Grassland, Sand, Swamp (slimes at evening), Cave (spiders, always hostile), Snow
 - **Tree Chopping**: Chop trees to collect wood (hold E near a tree)
+- **Ground Digging**: Dig downward unlimited depth to collect materials (dirt, stone, iron, etc.). Hold E to dig continuously. Colors darken with depth
+- **Directional Digging**: While underground, press E + arrow keys (left/right/down) to dig in that direction
 - **Material Placement**: Place blocks (wood, dirt, stone, clay, gold, iron, silver) by opening the palette (P), selecting a material (1–9), and clicking
 - **Tile Destruction**: Right-click a placed tile to remove it and return the material to inventory
 - **Step-up Physics**: Characters automatically step up onto placed tiles (up to one tile height)
-- **Particle Effects**: Wood sprite explosions on tree chop
+- **Falling into Holes**: Characters fall into dug holes and can be trapped underground
+- **Particle Effects**: Wood sprites and material particles on block destruction/digging
 - **Inventory System**: Track collected resources; auto-saved to localStorage
 - **Debug Mode**: Press B to toggle bounding boxes and a time-of-day overlay
 
@@ -21,14 +24,21 @@ A 2D browser-based adventure game featuring Alex and Steve. Chop trees, collect 
 ### Steve
 - **Arrow Left/Right**: Move
 - **Arrow Up / Space**: Jump
-- **E**: Chop nearby trees
+- **E**: Chop nearby trees; dig ground (no trees nearby)
 
 ### Alex
 - **A/D**: Move
 - **W**: Jump
-- **E**: Chop nearby trees
+- **E**: Chop nearby trees; dig ground (no trees nearby)
+
+### Digging
+- **E**: Start digging down (continuous while held)
+- **E + Arrow Left / A**: Dig left (when underground)
+- **E + Arrow Right / D**: Dig right (when underground)
+- **E + Arrow Down / S**: Dig down (when underground)
 
 ### General
+- **I**: Toggle inventory display
 - **P**: Open/close material palette
 - **1–9**: Select material (when palette open)
 - **Left-click**: Place selected material
@@ -93,8 +103,10 @@ Hostile mobs (zombies, skeletons, creepers, slimes) burn and despawn at dawn. Sp
 - `requestAnimationFrame` game loop with delta-time
 - Tile grid: 32×32px, snapped to world coordinates
 - Biome colors lerped via `lerpColor()` each frame
-- Save/load via `localStorage` (inventory + placed tiles + camera)
+- Save/load via `localStorage` (inventory + placed tiles + camera + dug ground holes)
 - Time state resets on page load (not persisted)
+- Ground digging: unlimited depth, persisted as Set of `"worldX,depth"` keys
+- Ground rendering: 50-layer depth with progressive darkening and seeded color variations
 
 ## Debug Mode (B)
 

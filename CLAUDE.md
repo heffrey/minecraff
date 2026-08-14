@@ -29,6 +29,39 @@ Characters use three methods:
 
 `game.dayNight.elapsed` accumulates delta ms. `cyclePos = elapsed / cycleDuration` (0–1). Phase derived from cyclePos ranges. Sky color lerped via `lerpColor(hexA, hexB, t)`. Stars are deterministic (index-based, no `Math.random()`). Phase transitions fire mob spawn/burn logic once per transition.
 
+## Ground Digging
+
+Steve can dig downward into the ground and sideways when underground. Hold **E** + direction to dig continuously (dig speed: 300ms per block).
+
+**Storage:**
+- `game.groundHoles` — Set of dug positions, keyed as `"worldGridX,depth"`
+- `game.dugMaterials` — Map storing `"worldGridX,depth"` → material name for visual rendering
+
+**Digging mechanics:**
+- Unlimited depth (no cap)
+- E-key priority: mobs in range → trees → ground digging
+- Directional controls: **E + Down/S** or just **E** digs down; **E + Left/A** digs left; **E + Right/D** digs right
+- While holding E, Steve digs continuously into the next layer
+- Cannot dig if a mob is in attack range
+- Each block yields a material (dirt, stone, iron, etc.) based on biome and depth
+
+**Visual rendering:**
+- Surface (depth 0): Biome-specific color (green for default)
+- Mid-layer (depth 1): Brown (#8B4513)
+- Deep layers (2+): Progressive darkening from gray to near-black by depth ~10, then stays very dark
+- Color variations: seeded random creates 15% darker/10% lighter blocks for visual interest
+- Rocks spawn randomly, increasing frequency with depth (10% base + 2% per layer, capped at 50%)
+- Renders up to 50 visible layers below surface (1600px)
+
+**Collision with holes:**
+- Character snaps to floorY calculated by checking contiguous dug depths
+- Loop: `while (isGroundHole(tileX, depth)) depth++` to find first solid ground
+- Mobs do NOT fall into holes (use fixed worldGroundY)
+
+**Save/Load:**
+- `groundHoles` serialized as array, restored as `new Set()`
+- `dugMaterials` persisted as Object, restored as Map
+
 ## Mob Lifecycle
 
 Spawned by `spawnHostileMob(type, options)`. Cap: 8 hostile (non-spider) + 4 spiders. On DAWN transition: `hostile && burnsAtDawn` mobs get `burning = true` → flash red 1500ms → `burnedOut = true` → removed in the backwards `for` loop in `gameLoop`.
