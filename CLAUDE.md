@@ -39,11 +39,25 @@ Steve can dig downward into the ground and sideways when underground. Hold **E**
 
 **Digging mechanics:**
 - Unlimited depth (no cap)
-- E-key priority: mobs in range → trees → ground digging
-- Directional controls: **E + Down/S** or just **E** digs down; **E + Left/A** digs left; **E + Right/D** digs right
-- While holding E, Steve digs continuously into the next layer
+- E-key priority: mobs in range → trees → ground digging. Steve spawns among
+  trees, so E near spawn chops wood and never reaches the dig branch — walk
+  clear of trees to dig
+- Directional controls: **E + Down/S** or just **E** digs down; **E + Left/A**
+  tunnels left; **E + Right/D** tunnels right. **E + Up** does NOT dig (Up is
+  reserved for jump)
+- Digging **down** advances `targetDepth`; digging **left/right** advances
+  `targetTileX` by ±32 at a constant depth, carving a horizontal tunnel
+- While holding E, Steve digs continuously (300ms per block)
 - Cannot dig if a mob is in attack range
 - Each block yields a material (dirt, stone, iron, etc.) based on biome and depth
+
+**Gotcha — abort check must compare against `originTileX`, not `targetTileX`.**
+`game.digging.originTileX` records the tile the digger stood on when the dig
+began. A sideways dig targets an *adjacent* tile, so comparing the digger's
+current tile to `targetTileX` is never equal and aborts the dig on the very next
+frame — that bug made tunneling silently impossible (the dig started, then died
+before a single block was removed). Measure "did the player walk away?" against
+`originTileX`.
 
 **Visual rendering:**
 - Surface (depth 0): Biome-specific color (green for default)

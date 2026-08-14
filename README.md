@@ -29,13 +29,20 @@ A 2D browser-based adventure game featuring Alex and Steve. Chop trees, collect 
 ### Alex
 - **A/D**: Move
 - **W**: Jump
-- **E**: Chop nearby trees; dig ground (no trees nearby)
 
-### Digging
-- **E**: Start digging down (continuous while held)
-- **E + Arrow Left / A**: Dig left (when underground)
-- **E + Arrow Right / D**: Dig right (when underground)
-- **E + Arrow Down / S**: Dig down (when underground)
+Alex can move and jump only. The **E** action key (attack, chop, dig) is wired to
+Steve alone.
+
+### Digging and Tunneling
+- **E**: Dig straight down (continuous while held, ~300ms per block)
+- **E + Arrow Down / S**: Dig down
+- **E + Arrow Left / A**: Tunnel left at the current depth
+- **E + Arrow Right / D**: Tunnel right at the current depth
+
+E does the first of these that applies: attack a mob in range, chop a nearby
+tree, then dig. You spawn surrounded by trees, so walk clear of them before
+digging or you will just chop wood. Digging stops if you walk to another tile,
+a mob comes into range, or you release E.
 
 ### General
 - **I**: Toggle inventory display

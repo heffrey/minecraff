@@ -18,6 +18,9 @@ const game = {
     digging: {
         isDigging: false,
         targetTileX: -1,
+        originTileX: -1, // Tile the digger stood on when this dig began. Sideways
+                         // digs target an adjacent tile, so "did the digger walk
+                         // away?" has to be measured against this, not the target.
         targetDepth: 0,
         direction: 'down', // 'down', 'left', 'right' - for directional digging
         lastHitTime: 0,
@@ -2968,13 +2971,14 @@ document.addEventListener('keydown', (e) => {
                 const isDownPressed = game.keys['ArrowDown'] || game.keys['s'] || game.keys['S'];
                 const isLeftPressed = game.keys['ArrowLeft'] || game.keys['a'] || game.keys['A'];
                 const isRightPressed = game.keys['ArrowRight'] || game.keys['d'] || game.keys['D'];
-                const hasDirection = isUpPressed || isDownPressed || isLeftPressed || isRightPressed;
 
                 let targetTileX = holeTileX;
                 let targetDepth = -1;
                 let direction = 'down';
 
-                if (hasDirection) {
+                // E with no direction held digs straight down. Up is left to
+                // jump, so E+Up is the one combo that does not dig.
+                if (!isUpPressed) {
                     // Find shallowest dug position to determine current depth
                     let currentDepth = 0;
                     for (let d = 0; d < 50; d++) {
@@ -3012,6 +3016,7 @@ document.addEventListener('keydown', (e) => {
                     if (targetDepth >= 0 && !isGroundHole(targetTileX, targetDepth)) {
                         game.digging.isDigging = true;
                         game.digging.targetTileX = targetTileX;
+                        game.digging.originTileX = holeTileX;
                         game.digging.targetDepth = targetDepth;
                         game.digging.direction = direction;
                         game.digging.lastHitTime = Date.now();
@@ -4594,7 +4599,7 @@ function gameLoop(timestamp) {
             }
         }
 
-        if (currentTileX !== targetTileX || mobInRange) {
+        if (currentTileX !== game.digging.originTileX || mobInRange) {
             // Abort digging - moved away or mob came in range
             game.digging.isDigging = false;
             if (steve.state === 'mine') steve.state = 'idle';
@@ -4616,14 +4621,13 @@ function gameLoop(timestamp) {
             // Move to next target based on direction
             const direction = game.digging.direction;
             if (direction === 'down') {
-                // Dig next layer down
+                // Sink the shaft one layer deeper
                 game.digging.targetDepth++;
             } else if (direction === 'left') {
-                // Dig next layer down at same X (or continue down current column)
-                game.digging.targetDepth++;
+                // Extend the tunnel sideways at the same depth
+                game.digging.targetTileX -= TILE;
             } else if (direction === 'right') {
-                // Dig next layer down at same X (or continue down current column)
-                game.digging.targetDepth++;
+                game.digging.targetTileX += TILE;
             }
 
             // Reset timer to continue digging
