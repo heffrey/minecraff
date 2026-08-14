@@ -38,7 +38,12 @@ Steve can dig downward into the ground and sideways when underground. Hold **E**
 - `game.dugMaterials` — Map storing `"worldGridX,depth"` → material name for visual rendering
 
 **Digging mechanics:**
-- Unlimited depth (no cap)
+- Depth is capped at `MAX_DIG_DEPTH` (50 layers, 1600px). This is a *rendering*
+  limit as much as a gameplay one — `drawGroundWithHoles()` only paints that far
+  down, so a deeper hole would be invisible while collision still walked into
+  it. The dig scan and both render loops read the one constant; raise it and all
+  three move together (at the cost of more layers drawn per frame). Digging into
+  a column already dug to the cap does nothing, with no feedback
 - E-key priority: mobs in range → trees → ground digging. Steve spawns among
   trees, so E near spawn chops wood and never reaches the dig branch — walk
   clear of trees to dig

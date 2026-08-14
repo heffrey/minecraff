@@ -3,6 +3,13 @@ const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 const loadingEl = document.getElementById('loading');
 
+// Deepest diggable layer below the surface. This is a rendering limit as much as
+// a gameplay one: drawGroundWithHoles() only paints down to this depth, so a
+// hole dug below it would be invisible while collision still walked into it.
+// The dig input scan, the ground fill, and the hole outlines must all agree, so
+// they all read this constant. Raising it means rendering more layers per frame.
+const MAX_DIG_DEPTH = 50;
+
 // Game State
 const game = {
     characters: [],
@@ -26,7 +33,6 @@ const game = {
         lastHitTime: 0,
         hitInterval: 300 // ms between digs
     },
-    MAX_DIG_DEPTH: Infinity, // Unlimited digging depth
     treeSpawnPoints: [], // Original tree spawn positions for regrowth
     treeRegrowthQueue: [], // Trees waiting to regrow {x, frameIndex, regrowAt}
     placedTiles: [], // Tiles placed in the world (world coordinates)
@@ -2884,6 +2890,13 @@ document.addEventListener('keydown', (e) => {
     
     // Action key (E) - Attack mobs or mine trees
     if (e.key === 'e' || e.key === 'E') {
+        // Ignore the OS auto-repeat burst while E is held. This handler only
+        // STARTS an action; gameLoop continues it while the key is down. Letting
+        // repeats back in re-entered this branch every ~30ms and reset the
+        // mining/digging lastHitTime, so the hit interval often never elapsed
+        // and holding E dug at about half rate or stalled outright.
+        if (e.repeat) return;
+
         const steve = game.characters[0]; // Steve is the first character
         if (!steve) return;
 
@@ -2981,12 +2994,8 @@ document.addEventListener('keydown', (e) => {
                 if (!isUpPressed) {
                     // Find shallowest dug position to determine current depth
                     let currentDepth = 0;
-                    for (let d = 0; d < 50; d++) {
-                        if (isGroundHole(holeTileX, d)) {
-                            currentDepth = d + 1;
-                        } else {
-                            break;
-                        }
+                    while (currentDepth < MAX_DIG_DEPTH && isGroundHole(holeTileX, currentDepth)) {
+                        currentDepth++;
                     }
 
                     if (isLeftPressed && !isDownPressed) {
@@ -3002,8 +3011,9 @@ document.addEventListener('keydown', (e) => {
                     } else if (isDownPressed || (!isLeftPressed && !isRightPressed && !isUpPressed)) {
                         // Dig down (default if no direction or Down is pressed)
                         targetTileX = holeTileX;
-                        // Find first non-dug depth below Steve
-                        for (let d = 0; d < 50; d++) {
+                        // Find first non-dug depth below Steve. Stays -1 when the
+                        // column is dug out to MAX_DIG_DEPTH, which stops the dig.
+                        for (let d = 0; d < MAX_DIG_DEPTH; d++) {
                             if (!isGroundHole(holeTileX, d)) {
                                 targetDepth = d;
                                 break;
@@ -3477,8 +3487,8 @@ function drawGroundWithHoles(ctx, biomeColors, screenGroundY, skyColor) {
         const screenX = worldX - game.camera.x;
         const biome = getBiome(worldX + TILE / 2);
 
-        // Draw ground layers (render up to 50 layers to support deep digging)
-        for (let depth = 0; depth < 50; depth++) {
+        // Draw ground layers down to the deepest diggable layer
+        for (let depth = 0; depth < MAX_DIG_DEPTH; depth++) {
             const screenY = screenGroundY + (depth * TILE);
             const layerHeight = TILE;
 
@@ -3542,7 +3552,7 @@ function drawGroundWithHoles(ctx, biomeColors, screenGroundY, skyColor) {
     ctx.lineWidth = 1;
     for (let worldX = startWorldX; worldX <= endWorldX; worldX += TILE) {
         const screenX = worldX - game.camera.x;
-        for (let depth = 0; depth <= 50; depth++) {
+        for (let depth = 0; depth < MAX_DIG_DEPTH; depth++) {
             const screenY = screenGroundY + (depth * TILE);
             ctx.beginPath();
             ctx.moveTo(screenX, screenY);

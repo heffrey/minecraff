@@ -9,7 +9,7 @@ A 2D browser-based adventure game featuring Alex and Steve. Chop trees, collect 
 - **Night Enemies**: Zombies, skeletons, and creepers spawn at night and burn at dawn
 - **Biomes**: Grassland, Sand, Swamp (slimes at evening), Cave (spiders, always hostile), Snow
 - **Tree Chopping**: Chop trees to collect wood (hold E near a tree)
-- **Ground Digging**: Dig downward unlimited depth to collect materials (dirt, stone, iron, etc.). Hold E to dig continuously. Colors darken with depth
+- **Ground Digging**: Dig down up to 50 layers to collect materials (dirt, stone, iron, etc.). Hold E to dig continuously. Colors darken with depth
 - **Directional Digging**: While underground, press E + arrow keys (left/right/down) to dig in that direction
 - **Material Placement**: Place blocks (wood, dirt, stone, clay, gold, iron, silver) by opening the palette (P), selecting a material (1–9), and clicking
 - **Tile Destruction**: Right-click a placed tile to remove it and return the material to inventory
@@ -112,7 +112,7 @@ Hostile mobs (zombies, skeletons, creepers, slimes) burn and despawn at dawn. Sp
 - Biome colors lerped via `lerpColor()` each frame
 - Save/load via `localStorage` (inventory + placed tiles + camera + dug ground holes)
 - Time state resets on page load (not persisted)
-- Ground digging: unlimited depth, persisted as Set of `"worldX,depth"` keys
+- Ground digging: up to 50 layers deep (`MAX_DIG_DEPTH`), persisted as Set of `"worldX,depth"` keys
 - Ground rendering: 50-layer depth with progressive darkening and seeded color variations
 
 ## Debug Mode (B)
