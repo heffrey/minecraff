@@ -34,15 +34,20 @@ Alex can move and jump only. The **E** action key (attack, chop, dig) is wired t
 Steve alone.
 
 ### Digging and Tunneling
-- **E**: Dig straight down (continuous while held, ~300ms per block)
-- **E + Arrow Down / S**: Dig down
+- **E + Arrow Down / S**: Dig down — always digs, even next to a tree or animal
+- **E**: Dig straight down, but only when nothing else is in reach (see below)
 - **E + Arrow Left / A**: Tunnel left at the current depth
 - **E + Arrow Right / D**: Tunnel right at the current depth
 
-E does the first of these that applies: attack a mob in range, chop a nearby
-tree, then dig. You spawn surrounded by trees, so walk clear of them before
-digging or you will just chop wood. Digging stops if you walk to another tile,
-a mob comes into range, or you release E.
+Hold the keys; digging is continuous at ~300ms per block, down to 50 layers.
+
+Bare **E** does the first thing that applies: attack a mob in range, chop a
+nearby tree, then dig. Trees are detected within 120px and they regrow, so the
+same spot can chop one minute and dig the next. **Hold Down/S with E when you
+mean to dig** — that skips the attack and chop checks entirely.
+
+Digging stops if you walk to another tile, a mob comes into range, or you
+release E.
 
 ### General
 - **I**: Toggle inventory display

@@ -24,8 +24,11 @@ const game = {
     dugMaterials: new Map(), // Map of "worldGridX,depth" -> material name
     digging: {
         isDigging: false,
-        targetTileX: -1,
-        originTileX: -1, // Tile the digger stood on when this dig began. Sideways
+        // null (not -1) means "no dig target". World X goes negative -- the cave
+        // biome is entirely x < -1000 -- so a numeric sentinel compared with
+        // >= 0 silently refused to dig anywhere west of the origin.
+        targetTileX: null,
+        originTileX: null, // Tile the digger stood on when this dig began. Sideways
                          // digs target an adjacent tile, so "did the digger walk
                          // away?" has to be measured against this, not the target.
         targetDepth: 0,
@@ -2900,6 +2903,13 @@ document.addEventListener('keydown', (e) => {
         const steve = game.characters[0]; // Steve is the first character
         if (!steve) return;
 
+        // Holding a downward key with E is an unambiguous "I want to dig", so it
+        // skips the attack and chop checks entirely. Without it, E follows the
+        // usual priority (attack, then chop, then dig) and a nearby animal or
+        // tree wins the key -- and since trees regrow and chickens wander, the
+        // same spot could chop one minute and dig the next.
+        const digIntent = game.keys['ArrowDown'] || game.keys['s'] || game.keys['S'];
+
         // First, try to attack mobs or chickens in range
         const steveWorldBounds = steve.getWorldBounds();
         const steveCenterX = steveWorldBounds.x + steveWorldBounds.width / 2;
@@ -2937,7 +2947,7 @@ document.addEventListener('keydown', (e) => {
             }
         }
 
-        if (targetInRange) {
+        if (targetInRange && !digIntent) {
             // Attack mobs or chickens
             steve.attack();
         } else {
@@ -2966,7 +2976,7 @@ document.addEventListener('keydown', (e) => {
                 }
             }
 
-            if (nearestTree) {
+            if (nearestTree && !digIntent) {
                 // Start mining - set state and track target tree
                 game.mining.isMining = true;
                 game.mining.targetTreeIndex = nearestTreeIndex;
@@ -4353,8 +4363,12 @@ function gameLoop(timestamp) {
     const isEPressed = game.keys['e'] || game.keys['E'];
 
     // If E is pressed but we're not mining, try to start mining
-    // But don't start mining if there's a mob in range - prioritize combat
-    if (isEPressed && !game.mining.isMining && steve) {
+    // But don't start mining if there's a mob in range - prioritize combat.
+    // This runs every frame E is held, so it must also stand down while a dig is
+    // under way or while the player is holding the dig key -- otherwise a tree
+    // within isNearTree range silently hijacks a dig that already started.
+    const digIntentHeld = game.keys['ArrowDown'] || game.keys['s'] || game.keys['S'];
+    if (isEPressed && !game.mining.isMining && steve && !digIntentHeld && !game.digging.isDigging) {
         // Check if there's a mob/creature in attack range
         let mobInRange = false;
         const steveWorldBounds = steve.getWorldBounds();
@@ -4584,7 +4598,7 @@ function gameLoop(timestamp) {
     }
 
     // Continue ground digging if E is held
-    if (game.digging.isDigging && game.digging.targetTileX >= 0 && isEPressed && steve) {
+    if (game.digging.isDigging && game.digging.targetTileX !== null && isEPressed && steve) {
         const now = Date.now();
         const { targetTileX, targetDepth } = game.digging;
 

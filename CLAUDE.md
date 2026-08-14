@@ -45,8 +45,15 @@ Steve can dig downward into the ground and sideways when underground. Hold **E**
   three move together (at the cost of more layers drawn per frame). Digging into
   a column already dug to the cap does nothing, with no feedback
 - E-key priority: mobs in range → trees → ground digging. Steve spawns among
-  trees, so E near spawn chops wood and never reaches the dig branch — walk
-  clear of trees to dig
+  trees, so bare E near spawn chops wood and never reaches the dig branch.
+  **Holding Down/S with E (`digIntent`) skips the attack and chop checks** and
+  digs regardless — measured on the starting 3000px, only 26% of positions
+  reached the dig branch on bare E (49% chop, 14% chicken, 11% mob), and because
+  trees regrow and chickens wander, the same spot changes behaviour over time
+- The attack/chop decision is duplicated: once in the E `keydown` handler and
+  again in `gameLoop`, which re-runs it every frame E is held. The gameLoop copy
+  must also honour `digIntent` and bail while `game.digging.isDigging`, or a tree
+  in range hijacks a dig that already started
 - Directional controls: **E + Down/S** or just **E** digs down; **E + Left/A**
   tunnels left; **E + Right/D** tunnels right. **E + Up** does NOT dig (Up is
   reserved for jump)
@@ -55,6 +62,13 @@ Steve can dig downward into the ground and sideways when underground. Hold **E**
 - While holding E, Steve digs continuously (300ms per block)
 - Cannot dig if a mob is in attack range
 - Each block yields a material (dirt, stone, iron, etc.) based on biome and depth
+
+**Gotcha — dig sentinels must be `null`, not `-1`.** World X goes negative (the
+cave biome is entirely `x < -1000`, and ~half the starting trees sit at negative
+X), so the old `game.digging.targetTileX >= 0` guard silently refused to dig
+anywhere west of the origin: the dig started and Steve entered the `mine` state,
+but `gameLoop` never removed a block. Any "is a target set?" test here has to be
+a `!== null` check, never a sign test.
 
 **Gotcha — abort check must compare against `originTileX`, not `targetTileX`.**
 `game.digging.originTileX` records the tile the digger stood on when the dig
