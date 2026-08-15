@@ -10,6 +10,107 @@ const loadingEl = document.getElementById('loading');
 // they all read this constant. Raising it means rendering more layers per frame.
 const MAX_DIG_DEPTH = 50;
 
+// Keys are stored normalised so bindings never have to list both cases.
+function normalizeKey(key) {
+    return key.length === 1 ? key.toLowerCase() : key;
+}
+
+// The two halves of the keyboard, keyed by SIDE rather than by player. These
+// bindings never move: swapping seats swaps which character a side drives, via
+// game.controlAssignment. Nothing here is allowed to mention Steve or Alex.
+const HEMISPHERES = Object.freeze({
+    left: Object.freeze({
+        side: 'left', label: 'WASD', marker: '◀',
+        left: ['a'], right: ['d'], jump: ['w'], down: ['s'], action: ['f', 'e']
+    }),
+    right: Object.freeze({
+        side: 'right', label: 'ARROWS', marker: '▶',
+        left: ['ArrowLeft'], right: ['ArrowRight'], jump: ['ArrowUp'],
+        down: ['ArrowDown'], action: ['/', '.']
+    })
+});
+
+const HEMISPHERE_SIDES = ['left', 'right'];
+
+// UI accent colour per player index (Steve, Alex). Colour belongs to the
+// character, so it does NOT move when the hemispheres are swapped.
+const PLAYER_COLORS = ['#4fc3f7', '#ff9800'];
+
+// Which side of the keyboard currently drives this character, or null.
+function hemisphereFor(char) {
+    if (!char || char.playerIndex === null || char.playerIndex === undefined) return null;
+    for (const side of HEMISPHERE_SIDES) {
+        if (game.controlAssignment[side] === char.playerIndex) return side;
+    }
+    return null;
+}
+
+// This character's live bindings. Always derived from the current assignment --
+// never cached -- so a swap takes effect everywhere on the very next read.
+function controlsFor(char) {
+    const side = hemisphereFor(char);
+    return side ? HEMISPHERES[side] : null;
+}
+
+// Is any key bound to this action currently held by this character?
+// Every action read goes through here so no code path can accidentally read
+// the other player's hemisphere.
+function isControlDown(char, actionName) {
+    const binding = char && char.controls && char.controls[actionName];
+    if (!binding) return false;
+    for (const key of binding) {
+        if (game.keys[key]) return true;
+    }
+    return false;
+}
+
+// World-space centre of a character's hitbox.
+function playerCenter(char) {
+    const bounds = char.getWorldBounds();
+    return { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
+}
+
+// The label to print in a world hint for this player's action key -- read from
+// the character's CURRENT hemisphere, so the prompts follow a swap.
+function actionKeyLabel(char) {
+    const key = (char && char.controls && char.controls.action && char.controls.action[0]) || 'e';
+    return key.length === 1 ? key.toUpperCase() : key;
+}
+
+// "ALEX (left) WASD+F   STEVE (right) ARROWS+/" for the swap banner and HUD.
+function controlAssignmentSummary() {
+    return HEMISPHERE_SIDES.map(side => {
+        const char = game.characters[game.controlAssignment[side]];
+        if (!char) return null;
+        const hemi = HEMISPHERES[side];
+        return `${char.name.toUpperCase()} ${hemi.marker} ${hemi.label}+${actionKeyLabel(char)}`;
+    }).filter(Boolean).join('   ');
+}
+
+// Flip which character each half of the keyboard drives.
+function swapControlHemispheres() {
+    // Clear held keys FIRST. A key held across the swap would otherwise still
+    // read as down for whichever character just inherited it, latching movement
+    // on a player who never pressed anything -- and stopPlayerAction() bails
+    // early while the action binding still reads as held.
+    for (const key of Object.keys(game.keys)) game.keys[key] = false;
+
+    for (const char of game.characters) {
+        if (!char) continue;
+        stopPlayerAction(char);
+        char.stop();
+    }
+
+    const { left, right } = game.controlAssignment;
+    game.controlAssignment = { left: right, right: left };
+
+    // Two kids swapping seats need to see that it took.
+    game.controlBanner = { text: controlAssignmentSummary(), until: Date.now() + 2500 };
+
+    console.log(`Controls swapped: ${game.controlBanner.text}`);
+    saveGame();
+}
+
 // Game State
 const game = {
     characters: [],
@@ -22,20 +123,8 @@ const game = {
     floatingTexts: [], // Floating text effects (e.g., MISS!)
     groundHoles: new Set(), // Dug ground cells: keys are "worldGridX,depth"
     dugMaterials: new Map(), // Map of "worldGridX,depth" -> material name
-    digging: {
-        isDigging: false,
-        // null (not -1) means "no dig target". World X goes negative -- the cave
-        // biome is entirely x < -1000 -- so a numeric sentinel compared with
-        // >= 0 silently refused to dig anywhere west of the origin.
-        targetTileX: null,
-        originTileX: null, // Tile the digger stood on when this dig began. Sideways
-                         // digs target an adjacent tile, so "did the digger walk
-                         // away?" has to be measured against this, not the target.
-        targetDepth: 0,
-        direction: 'down', // 'down', 'left', 'right' - for directional digging
-        lastHitTime: 0,
-        hitInterval: 300 // ms between digs
-    },
+    // NOTE: mining/digging state is per-Character (char.mining / char.digging),
+    // not global -- both players act independently.
     treeSpawnPoints: [], // Original tree spawn positions for regrowth
     treeRegrowthQueue: [], // Trees waiting to regrow {x, frameIndex, regrowAt}
     placedTiles: [], // Tiles placed in the world (world coordinates)
@@ -65,12 +154,29 @@ const game = {
     selectedMaterial: null, // Currently selected material for placement
     placementMode: false, // Whether placement mode is active
     debugMode: false, // Press 'B' to toggle debug mode (show bounding boxes)
-    scrollingMode: false, // Whether world scrolling is active (hold Shift)
-    mining: {
-        isMining: false,
-        targetTreeIndex: -1,
-        lastHitTime: 0,
-        hitInterval: 500 // Milliseconds between hits
+    scrollingMode: false, // Whether world scrolling is active (debug mode + Shift)
+    showMinimap: true, // Press 'M' to toggle the minimap (drawn by minimap.js)
+    // Which character each half of the keyboard drives, by playerIndex. The
+    // default matches existing muscle memory: Alex on WASD, Steve on the arrows.
+    // Backspace flips it via swapControlHemispheres().
+    controlAssignment: { left: 1, right: 0 },
+    controlBanner: { text: '', until: 0 }, // brief on-screen swap confirmation
+    // Split-screen / picture-in-picture state. game.js only creates the defaults;
+    // coop.js owns every field once it loads.
+    coop: {
+        split: false,        // true when the players are too far apart to share one view
+        splitAt: 0,          // ms timestamp when the split began (0 when together)
+        pip: null,           // {x, y, w, h, camX, camY, char} while split, else null
+        beaconsEnabled: true
+    },
+    // Tech tree / workshop state. game.js only creates the defaults; techtree.js
+    // owns every field once it loads.
+    tech: {
+        unlocked: new Set(['survival']), // ids of researched nodes
+        open: false,                     // panel visible
+        tab: 'tech',                     // 'tech' | 'workshop'
+        selected: null,                  // hovered/selected node or recipe id
+        crafted: {}                      // recipeId -> count
     },
     dayNight: {
         phase: 'DAY',          // 'DAY' | 'EVENING' | 'NIGHT' | 'DAWN'
@@ -296,8 +402,50 @@ class Character {
         this.attackCooldown = 400; // ms
         this.lastAttackTime = 0;
         this.attackDamage = 5; // damage per hit
+
+        // Player identity. initGame() fills playerIndex in once the character is
+        // in game.characters; controls/hemisphere are derived from it (below).
+        this.playerIndex = config.playerIndex ?? null;
+        this.color = config.color || '#ffffff';
+
+        // Per-player chopping state. Both players chop independently, so this
+        // cannot live on the global game object.
+        this.mining = {
+            isMining: false,
+            targetTreeIndex: -1, // index into game.trees, -1 = none
+            lastHitTime: 0,
+            hitInterval: 500 // Milliseconds between hits
+        };
+
+        // Per-player digging state.
+        this.digging = {
+            isDigging: false,
+            // null (not -1) means "no dig target". World X goes negative -- the cave
+            // biome is entirely x < -1000 -- so a numeric sentinel compared with
+            // >= 0 silently refused to dig anywhere west of the origin.
+            targetTileX: null,
+            originTileX: null, // Tile the digger stood on when this dig began. Sideways
+                             // digs target an adjacent tile, so "did the digger walk
+                             // away?" has to be measured against this, not the target.
+            targetDepth: 0,
+            direction: 'down', // 'down', 'left', 'right' - for directional digging
+            lastHitTime: 0,
+            hitInterval: 300 // ms between digs
+        };
     }
-    
+
+    // Bindings are DERIVED, never stored: swapControlHemispheres() only has to
+    // flip game.controlAssignment and every reader -- isControlDown, the world
+    // hints, the HUD -- picks up the new half of the keyboard immediately.
+    get controls() {
+        return controlsFor(this);
+    }
+
+    // 'left' | 'right' | null -- which half of the keyboard drives this player.
+    get hemisphere() {
+        return hemisphereFor(this);
+    }
+
     // Get the Y position where the character's feet (bottom of sprite content) should be
     // This accounts for transparent padding at the bottom of the sprite frame
     getFeetYPosition(groundY) {
@@ -823,9 +971,9 @@ class Character {
         }
         // Stop mining if moving
         if (this.state === 'mine') {
-            game.mining.isMining = false;
-            game.mining.targetTreeIndex = -1;
-            game.digging.isDigging = false;
+            this.mining.isMining = false;
+            this.mining.targetTreeIndex = -1;
+            this.digging.isDigging = false;
             this.state = this.onGround ? 'walk' : 'jump';
         } else if (this.state !== 'jump') {
             // Only update state if not already jumping (preserve jump state)
@@ -842,9 +990,9 @@ class Character {
         }
         // Stop mining if moving
         if (this.state === 'mine') {
-            game.mining.isMining = false;
-            game.mining.targetTreeIndex = -1;
-            game.digging.isDigging = false;
+            this.mining.isMining = false;
+            this.mining.targetTreeIndex = -1;
+            this.digging.isDigging = false;
             this.state = this.onGround ? 'walk' : 'jump';
         } else if (this.state !== 'jump') {
             // Only update state if not already jumping (preserve jump state)
@@ -2741,7 +2889,15 @@ async function initGame() {
             alexChar.y = alexChar.getFeetYPosition(worldGroundY);
         }
         game.characters.push(alexChar);
-        
+
+        // Hand each player its identity. char.controls is a getter derived from
+        // game.controlAssignment, so from here on every action read goes through
+        // the character's CURRENT hemisphere and no path is hardcoded to Steve.
+        game.characters.forEach((char, i) => {
+            char.playerIndex = i;
+            char.color = PLAYER_COLORS[i] || '#ffffff';
+        });
+
         // Create trees in the world (after sprite sheets are loaded)
         // Trees will be spawned procedurally across the entire map
         if (game.spriteSheets.trees) {
@@ -2864,44 +3020,432 @@ async function initGame() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Per-player actions (attack / chop / dig)
+//
+// Every function here takes the acting character and reads that character's own
+// bindings and its own char.mining / char.digging. Nothing in this section may
+// reach for game.characters[0].
+// ---------------------------------------------------------------------------
+
+// Is a mob or a chicken close enough for this character to hit?
+// Corpses are skipped: Mob.die() starts a 2.5s death animation and the mob
+// stays in game.mobs for the whole of it, so a scan that only checks burnedOut
+// lets a dead mob keep claiming the action key.
+function targetInAttackRange(char) {
+    const center = playerCenter(char);
+
+    for (const mob of game.mobs) {
+        if (mob.burnedOut || mob.isDying) continue;
+        const dx = mob.x + mob.width / 2 - center.x;
+        const dy = mob.y + mob.height / 2 - center.y;
+        if (Math.sqrt(dx * dx + dy * dy) < char.attackRange) return true;
+    }
+
+    for (const chicken of game.chickens) {
+        if (chicken.isDead) continue;
+        const dx = chicken.x + chicken.width / 2 - center.x;
+        const dy = chicken.y + chicken.height / 2 - center.y;
+        if (Math.sqrt(dx * dx + dy * dy) < char.attackRange) return true;
+    }
+
+    return false;
+}
+
+// Narrower check used only to abort a dig: mobs only (a chicken wandering past
+// should not cancel a tunnel) and measured from the digger's head rather than
+// its centre, matching the original dig-abort geometry.
+function mobInterruptsDig(char) {
+    const bounds = char.getWorldBounds();
+    const charCenterX = bounds.x + bounds.width / 2;
+
+    for (const mob of game.mobs) {
+        if (mob.burnedOut || mob.isDying) continue;
+        const dx = mob.x + mob.width / 2 - charCenterX;
+        const dy = mob.y + mob.height / 2 - bounds.y;
+        if (Math.sqrt(dx * dx + dy * dy) < char.attackRange) return true;
+    }
+    return false;
+}
+
+// Index into game.trees of the nearest tree this character can reach, or -1.
+function findNearestTreeIndex(char) {
+    const center = playerCenter(char);
+    let nearestIndex = -1;
+    let nearestDistance = Infinity;
+
+    for (let i = 0; i < game.trees.length; i++) {
+        const tree = game.trees[i];
+        if (!char.isNearTree(tree)) continue;
+
+        const treeWorldBounds = tree.getWorldBounds();
+        const dx = center.x - (treeWorldBounds.x + treeWorldBounds.width / 2);
+        const dy = center.y - (treeWorldBounds.y + treeWorldBounds.height / 2);
+        const distance = Math.sqrt(dx * dx + dy * dy);
+
+        if (distance < nearestDistance) {
+            nearestDistance = distance;
+            nearestIndex = i;
+        }
+    }
+
+    return nearestIndex;
+}
+
+function startMining(char, treeIndex) {
+    char.mining.isMining = true;
+    char.mining.targetTreeIndex = treeIndex;
+    char.mining.lastHitTime = Date.now();
+    char.state = 'mine';
+}
+
+// Pick a dig target from the direction this player is holding and start the dig.
+// Returns true if a dig actually began.
+function beginDig(char) {
+    const TILE = 32;
+    const charWorldBounds = char.getWorldBounds();
+    const charCenterX = charWorldBounds.x + charWorldBounds.width / 2;
+    const holeTileX = Math.floor(charCenterX / TILE) * TILE;
+
+    // Direction comes from this player's own bindings, never from the other's.
+    const isUpPressed = isControlDown(char, 'jump');
+    const isDownPressed = isControlDown(char, 'down');
+    const isLeftPressed = isControlDown(char, 'left');
+    const isRightPressed = isControlDown(char, 'right');
+
+    // Action with no direction held digs straight down. Up is left to jump, so
+    // action+Up is the one combo that does not dig.
+    if (isUpPressed) return false;
+
+    let targetTileX = holeTileX;
+    let targetDepth = -1;
+    let direction = 'down';
+
+    // Find shallowest dug position to determine current depth
+    let currentDepth = 0;
+    while (currentDepth < MAX_DIG_DEPTH && isGroundHole(holeTileX, currentDepth)) {
+        currentDepth++;
+    }
+
+    if (isLeftPressed && !isDownPressed) {
+        // Dig left
+        targetTileX = holeTileX - TILE;
+        targetDepth = Math.max(0, currentDepth - 1);
+        direction = 'left';
+    } else if (isRightPressed && !isDownPressed) {
+        // Dig right
+        targetTileX = holeTileX + TILE;
+        targetDepth = Math.max(0, currentDepth - 1);
+        direction = 'right';
+    } else if (isDownPressed || (!isLeftPressed && !isRightPressed)) {
+        // Dig down (default if no direction or Down is pressed)
+        targetTileX = holeTileX;
+        // Find first non-dug depth below the player. Stays -1 when the column
+        // is dug out to MAX_DIG_DEPTH, which stops the dig.
+        for (let d = 0; d < MAX_DIG_DEPTH; d++) {
+            if (!isGroundHole(holeTileX, d)) {
+                targetDepth = d;
+                break;
+            }
+        }
+        direction = 'down';
+    }
+
+    if (targetDepth < 0 || isGroundHole(targetTileX, targetDepth)) return false;
+
+    char.digging.isDigging = true;
+    char.digging.targetTileX = targetTileX;
+    // originTileX is the tile the digger STOOD on. A sideways dig targets an
+    // adjacent tile, so "did the digger walk away?" has to be measured against
+    // this, never against targetTileX.
+    char.digging.originTileX = holeTileX;
+    char.digging.targetDepth = targetDepth;
+    char.digging.direction = direction;
+    char.digging.lastHitTime = Date.now();
+    char.state = 'mine';
+    return true;
+}
+
+// One character just pressed its action key. Priority: attack, then chop, then
+// dig -- unless the player is holding its own down key, which is an
+// unambiguous "I want to dig" and skips the attack and chop checks entirely.
+// Without that override a nearby animal or tree wins the key, and since trees
+// regrow and chickens wander, the same spot could chop one minute and dig the
+// next.
+function startPlayerAction(char) {
+    if (!char) return;
+
+    const digIntent = isControlDown(char, 'down');
+
+    if (!digIntent) {
+        if (targetInAttackRange(char)) {
+            char.attack();
+            return;
+        }
+
+        const treeIndex = findNearestTreeIndex(char);
+        if (treeIndex !== -1) {
+            startMining(char, treeIndex);
+            return;
+        }
+    }
+
+    beginDig(char);
+}
+
+// One character released its action key.
+function stopPlayerAction(char) {
+    if (!char) return;
+    // A binding can list several keys ('/' and '.'); releasing one while the
+    // other is still held is not a release of the action.
+    if (isControlDown(char, 'action')) return;
+
+    if (char.mining.isMining) {
+        char.mining.isMining = false;
+        char.mining.targetTreeIndex = -1;
+    }
+    char.digging.isDigging = false;
+    if (char.state === 'mine') {
+        char.state = 'idle';
+    }
+}
+
+// Called once per character per frame from gameLoop. Continues whatever this
+// player started, and starts a chop if the action key is being held near a tree.
+function updatePlayerAction(char, now) {
+    if (!char || !char.controls) return;
+
+    const actionHeld = isControlDown(char, 'action');
+    const digIntentHeld = isControlDown(char, 'down');
+
+    // Start chopping if the key is held and nothing else has claimed it.
+    // This runs every frame the key is held, so it must also stand down while a
+    // dig is under way or while the player is holding its dig key -- otherwise
+    // a tree within isNearTree range silently hijacks a dig that already began.
+    if (actionHeld && !char.mining.isMining && !digIntentHeld && !char.digging.isDigging) {
+        if (!targetInAttackRange(char)) {
+            const treeIndex = findNearestTreeIndex(char);
+            if (treeIndex !== -1) startMining(char, treeIndex);
+        }
+    }
+
+    // --- Continuous chopping -------------------------------------------------
+    if (char.mining.isMining && char.mining.targetTreeIndex >= 0 && actionHeld) {
+        const targetTreeIndex = char.mining.targetTreeIndex;
+        const mobInRange = targetInAttackRange(char);
+
+        if (!mobInRange && targetTreeIndex < game.trees.length) {
+            const targetTree = game.trees[targetTreeIndex];
+
+            if (char.isNearTree(targetTree)) {
+                if (now - char.mining.lastHitTime >= char.mining.hitInterval) {
+                    const charWorldBounds = char.getWorldBounds();
+                    const treeWorldBounds = targetTree.getWorldBounds();
+
+                    // Hit position is where the axe meets the tree (world coords)
+                    let hitX, hitY;
+                    if (char.facing === 'right') {
+                        hitX = treeWorldBounds.x;
+                        hitY = charWorldBounds.y + charWorldBounds.height * 0.4;
+                    } else {
+                        hitX = treeWorldBounds.x + treeWorldBounds.width;
+                        hitY = charWorldBounds.y + charWorldBounds.height * 0.4;
+                    }
+
+                    const sparkCount = 6 + Math.floor(Math.random() * 4); // 6-9 sparks
+                    for (let i = 0; i < sparkCount; i++) {
+                        game.particles.push(new SparkParticle(hitX, hitY));
+                    }
+
+                    const treeDestroyed = targetTree.hit();
+                    if (treeDestroyed) {
+                        const destroyedTreeWorldBounds = targetTree.getWorldBounds();
+                        const treeCenterX = destroyedTreeWorldBounds.x + destroyedTreeWorldBounds.width / 2;
+                        const treeCenterY = destroyedTreeWorldBounds.y + destroyedTreeWorldBounds.height / 2;
+
+                        const woodFrameIndex = (game.inventoryMappings && game.inventoryMappings.wood !== null && game.inventoryMappings.wood !== undefined)
+                            ? game.inventoryMappings.wood
+                            : 0;
+
+                        const particleCount = 5 + Math.floor(Math.random() * 4);
+                        const inventorySheet = game.spriteSheets['inventory'];
+                        if (inventorySheet) {
+                            for (let i = 0; i < particleCount; i++) {
+                                game.particles.push(new WoodParticle(
+                                    inventorySheet,
+                                    woodFrameIndex,
+                                    treeCenterX,
+                                    treeCenterY
+                                ));
+                            }
+                        }
+
+                        game.inventory.wood += 1;
+                        console.log(`Chopped down tree! Wood: ${game.inventory.wood}`);
+
+                        // Schedule tree regrowth (random delay between 10-30 seconds)
+                        const regrowthDelay = 10000 + Math.random() * 20000;
+                        game.treeRegrowthQueue.push({
+                            x: destroyedTreeWorldBounds.x,
+                            frameIndex: targetTree.frameIndex,
+                            regrowAt: Date.now() + regrowthDelay
+                        });
+
+                        game.trees.splice(targetTreeIndex, 1);
+
+                        // mining.targetTreeIndex is a raw index into game.trees, so
+                        // removing an element shifts it under the OTHER player's
+                        // feet: without this fixup they would keep chopping and
+                        // silently damage whichever tree slid into that slot.
+                        for (const other of game.characters) {
+                            if (other === char || !other || !other.mining) continue;
+                            if (other.mining.targetTreeIndex === targetTreeIndex) {
+                                other.mining.isMining = false;
+                                other.mining.targetTreeIndex = -1;
+                                if (other.state === 'mine') other.state = 'idle';
+                            } else if (other.mining.targetTreeIndex > targetTreeIndex) {
+                                other.mining.targetTreeIndex--;
+                            }
+                        }
+
+                        char.mining.isMining = false;
+                        char.mining.targetTreeIndex = -1;
+                        // Return to idle after a brief delay
+                        setTimeout(() => {
+                            if (char.state === 'mine') char.state = 'idle';
+                        }, 300);
+                    } else {
+                        console.log(`Chopping tree... (${targetTree.health}/${targetTree.maxHealth} hits remaining)`);
+                        char.mining.lastHitTime = now;
+                    }
+                }
+            } else {
+                // Player moved away from the tree, stop mining
+                char.mining.isMining = false;
+                char.mining.targetTreeIndex = -1;
+                if (char.state === 'mine') char.state = 'idle';
+            }
+        } else {
+            // Stop mining if mob in range or the tree was removed
+            char.mining.isMining = false;
+            char.mining.targetTreeIndex = -1;
+            if (char.state === 'mine') char.state = 'idle';
+        }
+    } else if (!actionHeld && char.mining.isMining) {
+        // Action key released, stop mining
+        char.mining.isMining = false;
+        char.mining.targetTreeIndex = -1;
+        if (char.state === 'mine') char.state = 'idle';
+    }
+
+    // --- Continuous digging --------------------------------------------------
+    // targetTileX is tested with !== null, never a sign test: world X goes
+    // negative (the cave biome is entirely x < -1000), so a >= 0 guard would
+    // refuse to dig anywhere west of the origin.
+    if (char.digging.isDigging && char.digging.targetTileX !== null && actionHeld) {
+        const TILE = 32;
+        const { targetTileX, targetDepth } = char.digging;
+
+        const charWorldBounds = char.getWorldBounds();
+        const charCenterX = charWorldBounds.x + charWorldBounds.width / 2;
+        const currentTileX = Math.floor(charCenterX / TILE) * TILE;
+
+        if (currentTileX !== char.digging.originTileX || mobInterruptsDig(char)) {
+            // Abort digging - walked away, or a mob came into range
+            char.digging.isDigging = false;
+            if (char.state === 'mine') char.state = 'idle';
+        } else if (now - char.digging.lastHitTime >= char.digging.hitInterval) {
+            const biome = getBiome(targetTileX + TILE / 2);
+            const material = getGroundMaterial(biome, targetDepth);
+
+            game.inventory[material] = (game.inventory[material] || 0) + 1;
+
+            digGroundHole(targetTileX, targetDepth, material);
+
+            const worldGroundY = canvas.height - 50;
+            spawnDigParticles(targetTileX + TILE / 2, worldGroundY + targetDepth * TILE + TILE / 2, material, 8);
+
+            // Move to next target based on direction
+            const direction = char.digging.direction;
+            if (direction === 'down') {
+                // Sink the shaft one layer deeper
+                char.digging.targetDepth++;
+            } else if (direction === 'left') {
+                // Extend the tunnel sideways at the same depth
+                char.digging.targetTileX -= TILE;
+            } else if (direction === 'right') {
+                char.digging.targetTileX += TILE;
+            }
+
+            char.digging.lastHitTime = now;
+
+            // Save progress
+            saveGame();
+        }
+    } else if (!actionHeld && char.digging.isDigging) {
+        // Action key released, stop digging
+        char.digging.isDigging = false;
+        if (char.state === 'mine') char.state = 'idle';
+    }
+}
+
 // Input handling
 document.addEventListener('keydown', (e) => {
-    game.keys[e.key] = true;
-    
-    // Toggle scrolling mode (Shift key)
-    if (e.key === 'Shift') {
-        game.scrollingMode = true;
+    const key = normalizeKey(e.key);
+
+    // The tech panel gets first refusal on every key while it is open, so its
+    // navigation keys never leak through and move a player.
+    if (typeof techPanelKey === 'function' && techPanelKey(key)) {
+        e.preventDefault();
+        return;
     }
-    
-    // Character 1 (Steve) - Arrow keys (only if not scrolling)
+
+    // Swap which player drives which half of the keyboard. Backspace is bound in
+    // NEITHER hemisphere, so it can never double as somebody's movement key.
+    // preventDefault stops the browser navigating back.
+    if (key === 'Backspace') {
+        e.preventDefault();
+        swapControlHemispheres();
+        return;
+    }
+
+    game.keys[key] = true;
+
+    // Space no longer jumps: on a shared keyboard it is ambiguous which player
+    // meant it. It still has to be swallowed or the page scrolls.
+    if (key === ' ') e.preventDefault();
+    if (key.startsWith('Arrow')) e.preventDefault();
+
+    // Manual camera scrolling is a debug tool now. With two players sharing one
+    // keyboard a stray Shift used to freeze both of them.
+    if (key === 'Shift') {
+        game.scrollingMode = game.debugMode;
+    }
+
+    // Movement - each player reads only its own hemisphere
     if (!game.scrollingMode) {
-        if (e.key === 'ArrowLeft') {
-            game.characters[0]?.moveLeft();
-        }
-        if (e.key === 'ArrowRight') {
-            game.characters[0]?.moveRight();
-        }
-        if (e.key === 'ArrowUp' || e.key === ' ') {
-            e.preventDefault();
-            game.characters[0]?.jump();
+        for (const char of game.characters) {
+            if (!char || !char.controls) continue;
+            if (char.controls.left.includes(key)) char.moveLeft();
+            if (char.controls.right.includes(key)) char.moveRight();
+            if (char.controls.jump.includes(key)) char.jump();
         }
     }
-    
-    // Character 2 (Alex) - WASD keys (only if not scrolling)
-    if (!game.scrollingMode) {
-        if (e.key === 'a' || e.key === 'A') {
-            game.characters[1]?.moveLeft();
-        }
-        if (e.key === 'd' || e.key === 'D') {
-            game.characters[1]?.moveRight();
-        }
-        if (e.key === 'w' || e.key === 'W') {
-            game.characters[1]?.jump();
+
+    // Action key - attack mobs, chop trees, or dig. Ignore the OS auto-repeat
+    // burst while the key is held: this handler only STARTS an action, gameLoop
+    // continues it. Letting repeats back in reset the mining/digging
+    // lastHitTime every ~30ms, so the hit interval often never elapsed and
+    // holding the key dug at about half rate or stalled outright.
+    if (!e.repeat) {
+        for (const char of game.characters) {
+            if (!char || !char.controls) continue;
+            if (char.controls.action.includes(key)) startPlayerAction(char);
         }
     }
-    
+
     // Toggle debug mode (show bounding boxes) - Press 'B'
-    if (e.key === 'b' || e.key === 'B') {
+    if (key === 'b') {
         game.debugMode = !game.debugMode;
         game.characters.forEach(char => {
             char.showBounds = game.debugMode;
@@ -2909,181 +3453,35 @@ document.addEventListener('keydown', (e) => {
         console.log(`Debug mode: ${game.debugMode ? 'ON' : 'OFF'}`);
     }
     
-    // Action key (E) - Attack mobs or mine trees
-    if (e.key === 'e' || e.key === 'E') {
-        // Ignore the OS auto-repeat burst while E is held. This handler only
-        // STARTS an action; gameLoop continues it while the key is down. Letting
-        // repeats back in re-entered this branch every ~30ms and reset the
-        // mining/digging lastHitTime, so the hit interval often never elapsed
-        // and holding E dug at about half rate or stalled outright.
-        if (e.repeat) return;
-
-        const steve = game.characters[0]; // Steve is the first character
-        if (!steve) return;
-
-        // Holding a downward key with E is an unambiguous "I want to dig", so it
-        // skips the attack and chop checks entirely. Without it, E follows the
-        // usual priority (attack, then chop, then dig) and a nearby animal or
-        // tree wins the key -- and since trees regrow and chickens wander, the
-        // same spot could chop one minute and dig the next.
-        const digIntent = game.keys['ArrowDown'] || game.keys['s'] || game.keys['S'];
-
-        // First, try to attack mobs or chickens in range
-        const steveWorldBounds = steve.getWorldBounds();
-        const steveCenterX = steveWorldBounds.x + steveWorldBounds.width / 2;
-        const steveCenterY = steveWorldBounds.y + steveWorldBounds.height / 2;
-
-        let targetInRange = false;
-        for (const mob of game.mobs) {
-            if (mob.burnedOut) continue;
-            const mobCenterX = mob.x + mob.width / 2;
-            const mobCenterY = mob.y + mob.height / 2;
-            const dx = mobCenterX - steveCenterX;
-            const dy = mobCenterY - steveCenterY;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-
-            if (dist < steve.attackRange) {
-                targetInRange = true;
-                break;
-            }
-        }
-
-        // Also check for chickens in range
-        if (!targetInRange) {
-            for (const chicken of game.chickens) {
-                if (chicken.isDead) continue;
-                const chickenCenterX = chicken.x + chicken.width / 2;
-                const chickenCenterY = chicken.y + chicken.height / 2;
-                const dx = chickenCenterX - steveCenterX;
-                const dy = chickenCenterY - steveCenterY;
-                const dist = Math.sqrt(dx * dx + dy * dy);
-
-                if (dist < steve.attackRange) {
-                    targetInRange = true;
-                    break;
-                }
-            }
-        }
-
-        if (targetInRange && !digIntent) {
-            // Attack mobs or chickens
-            steve.attack();
-        } else {
-            // No mobs in range, try mining trees
-            // Find the nearest tree to Steve
-            let nearestTree = null;
-            let nearestDistance = Infinity;
-            let nearestTreeIndex = -1;
-
-            for (let i = 0; i < game.trees.length; i++) {
-                const tree = game.trees[i];
-                if (steve.isNearTree(tree)) {
-                    const treeWorldBounds = tree.getWorldBounds();
-                    const treeCenterX = treeWorldBounds.x + treeWorldBounds.width / 2;
-                    const treeCenterY = treeWorldBounds.y + treeWorldBounds.height / 2;
-
-                    const dx = steveCenterX - treeCenterX;
-                    const dy = steveCenterY - treeCenterY;
-                    const distance = Math.sqrt(dx * dx + dy * dy);
-
-                    if (distance < nearestDistance) {
-                        nearestDistance = distance;
-                        nearestTree = tree;
-                        nearestTreeIndex = i;
-                    }
-                }
-            }
-
-            if (nearestTree && !digIntent) {
-                // Start mining - set state and track target tree
-                game.mining.isMining = true;
-                game.mining.targetTreeIndex = nearestTreeIndex;
-                game.mining.lastHitTime = Date.now();
-                steve.state = 'mine';
-            } else {
-                // No tree found, try ground digging
-                const TILE = 32;
-                const charCenterX = steveWorldBounds.x + steveWorldBounds.width / 2;
-                const holeTileX = Math.floor(charCenterX / TILE) * TILE;
-                const worldGroundY = canvas.height - 50;
-
-                // Check for directional input
-                const isUpPressed = game.keys['ArrowUp'] || game.keys['w'] || game.keys['W'];
-                const isDownPressed = game.keys['ArrowDown'] || game.keys['s'] || game.keys['S'];
-                const isLeftPressed = game.keys['ArrowLeft'] || game.keys['a'] || game.keys['A'];
-                const isRightPressed = game.keys['ArrowRight'] || game.keys['d'] || game.keys['D'];
-
-                let targetTileX = holeTileX;
-                let targetDepth = -1;
-                let direction = 'down';
-
-                // E with no direction held digs straight down. Up is left to
-                // jump, so E+Up is the one combo that does not dig.
-                if (!isUpPressed) {
-                    // Find shallowest dug position to determine current depth
-                    let currentDepth = 0;
-                    while (currentDepth < MAX_DIG_DEPTH && isGroundHole(holeTileX, currentDepth)) {
-                        currentDepth++;
-                    }
-
-                    if (isLeftPressed && !isDownPressed) {
-                        // Dig left
-                        targetTileX = holeTileX - TILE;
-                        targetDepth = Math.max(0, currentDepth - 1);
-                        direction = 'left';
-                    } else if (isRightPressed && !isDownPressed) {
-                        // Dig right
-                        targetTileX = holeTileX + TILE;
-                        targetDepth = Math.max(0, currentDepth - 1);
-                        direction = 'right';
-                    } else if (isDownPressed || (!isLeftPressed && !isRightPressed && !isUpPressed)) {
-                        // Dig down (default if no direction or Down is pressed)
-                        targetTileX = holeTileX;
-                        // Find first non-dug depth below Steve. Stays -1 when the
-                        // column is dug out to MAX_DIG_DEPTH, which stops the dig.
-                        for (let d = 0; d < MAX_DIG_DEPTH; d++) {
-                            if (!isGroundHole(holeTileX, d)) {
-                                targetDepth = d;
-                                break;
-                            }
-                        }
-                        direction = 'down';
-                    }
-
-                    // Start digging if target is valid
-                    if (targetDepth >= 0 && !isGroundHole(targetTileX, targetDepth)) {
-                        game.digging.isDigging = true;
-                        game.digging.targetTileX = targetTileX;
-                        game.digging.originTileX = holeTileX;
-                        game.digging.targetDepth = targetDepth;
-                        game.digging.direction = direction;
-                        game.digging.lastHitTime = Date.now();
-                        steve.state = 'mine';
-                    }
-                }
-            }
-        }
-    }
-
     // Toggle inventory display (I key)
-    if (e.key === 'i' || e.key === 'I') {
+    if (key === 'i') {
         game.showInventory = !game.showInventory;
     }
-    
+
+    // Toggle the minimap (M key) - drawn by minimap.js
+    if (key === 'm') {
+        game.showMinimap = !game.showMinimap;
+    }
+
+    // Toggle the tech tree / workshop panel (T key) - drawn by techtree.js
+    if (key === 't') {
+        game.tech.open = !game.tech.open;
+    }
+
     // Toggle material palette (P key)
-    if (e.key === 'p' || e.key === 'P') {
+    if (key === 'p') {
         game.showMaterialPalette = !game.showMaterialPalette;
         if (!game.showMaterialPalette) {
             game.selectedMaterial = null;
             game.placementMode = false;
         }
     }
-    
+
     // Number keys 1-9 to select materials from palette
     const numKeys = ['1', '2', '3', '4', '5', '6', '7', '8', '9'];
-    if (numKeys.includes(e.key) && game.showMaterialPalette) {
+    if (numKeys.includes(key) && game.showMaterialPalette) {
         const materialOrder = ['dirt', 'wood', 'clay', 'stone', 'iron', 'silver', 'gold', 'sand', 'snow'];
-        const index = parseInt(e.key) - 1;
+        const index = parseInt(key) - 1;
         if (index < materialOrder.length) {
             const materialName = materialOrder[index];
             // Check if player has this material in inventory
@@ -3097,41 +3495,30 @@ document.addEventListener('keydown', (e) => {
             }
         }
     }
-    
+
     // Escape to cancel placement mode
-    if (e.key === 'Escape') {
+    if (key === 'Escape') {
         game.selectedMaterial = null;
         game.placementMode = false;
     }
 });
 
 document.addEventListener('keyup', (e) => {
-    game.keys[e.key] = false;
-    
+    const key = normalizeKey(e.key);
+    game.keys[key] = false;
+
     // Toggle scrolling mode off
-    if (e.key === 'Shift') {
+    if (key === 'Shift') {
         game.scrollingMode = false;
     }
-    
-    // Stop character 1
-    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-        game.characters[0]?.stop();
-    }
-    
-    // Stop character 2
-    if (e.key === 'a' || e.key === 'A' || e.key === 'd' || e.key === 'D') {
-        game.characters[1]?.stop();
-    }
-    
-    // Stop mining when E is released
-    if (e.key === 'e' || e.key === 'E') {
-        const steve = game.characters[0];
-        if (steve && game.mining.isMining) {
-            game.mining.isMining = false;
-            game.mining.targetTreeIndex = -1;
-            if (steve.state === 'mine') {
-                steve.state = 'idle';
-            }
+
+    for (const char of game.characters) {
+        if (!char || !char.controls) continue;
+        if (char.controls.left.includes(key) || char.controls.right.includes(key)) {
+            char.stop();
+        }
+        if (char.controls.action.includes(key)) {
+            stopPlayerAction(char);
         }
     }
 });
@@ -3463,11 +3850,13 @@ function seededRandom(seed) {
     return x - Math.floor(x);
 }
 
-function drawGroundWithHoles(ctx, biomeColors, screenGroundY, skyColor) {
+// Camera is passed in (never read from game.camera) so the picture-in-picture
+// inset can re-render the ground for a second viewport.
+function drawGroundWithHoles(ctx, biomeColors, screenGroundY, skyColor, camX, viewW) {
     const TILE = 32;
     const worldGroundY = canvas.height - 50;
-    const startWorldX = Math.floor(game.camera.x / TILE) * TILE;
-    const endWorldX = startWorldX + canvas.width + TILE;
+    const startWorldX = Math.floor(camX / TILE) * TILE;
+    const endWorldX = startWorldX + viewW + TILE;
 
     // Material colors by depth
     const MATERIAL_COLORS_BY_DEPTH = {
@@ -3512,7 +3901,7 @@ function drawGroundWithHoles(ctx, biomeColors, screenGroundY, skyColor) {
 
     // Draw vertical strips for each tile column
     for (let worldX = startWorldX; worldX <= endWorldX; worldX += TILE) {
-        const screenX = worldX - game.camera.x;
+        const screenX = worldX - camX;
         const biome = getBiome(worldX + TILE / 2);
 
         // Draw ground layers down to the deepest diggable layer
@@ -3579,7 +3968,7 @@ function drawGroundWithHoles(ctx, biomeColors, screenGroundY, skyColor) {
     ctx.strokeStyle = 'rgba(0,0,0,0.15)';
     ctx.lineWidth = 1;
     for (let worldX = startWorldX; worldX <= endWorldX; worldX += TILE) {
-        const screenX = worldX - game.camera.x;
+        const screenX = worldX - camX;
         for (let depth = 0; depth < MAX_DIG_DEPTH; depth++) {
             const screenY = screenGroundY + (depth * TILE);
             ctx.beginPath();
@@ -3687,7 +4076,11 @@ function saveGame() {
             dugMaterials: Object.fromEntries(game.dugMaterials), // Convert Map to Object
             groundHoles: [...game.groundHoles], // Convert Set to Array
             camera: game.camera,
-            version: 1 // For future compatibility
+            tech: [...game.tech.unlocked], // Convert Set to Array
+            crafted: game.tech.crafted,
+            controlAssignment: game.controlAssignment,
+            players: game.characters.map(char => ({ x: char.x, y: char.y, hp: char.hp })),
+            version: 2 // For future compatibility
         };
         localStorage.setItem('minecraff_save', JSON.stringify(gameState));
         console.log('Game saved!');
@@ -3736,6 +4129,43 @@ function loadGame() {
         if (gameState.groundHoles) {
             game.groundHoles = new Set(gameState.groundHoles);
             console.log(`Loaded ${game.groundHoles.size} ground holes`);
+        }
+
+        // Everything below was added with co-op. A save written before then has
+        // none of these keys, so each one is guarded independently.
+        if (Array.isArray(gameState.tech)) {
+            game.tech.unlocked = new Set(gameState.tech);
+            // 'survival' is the root node; a save without it would leave the
+            // tech tree with no reachable entry point.
+            game.tech.unlocked.add('survival');
+        }
+
+        if (gameState.crafted && typeof gameState.crafted === 'object') {
+            game.tech.crafted = { ...gameState.crafted };
+        }
+
+        // Restore who sits on which half of the keyboard. Only accept a pair
+        // that actually assigns each side to a different player -- a malformed
+        // one would leave a character with no bindings at all.
+        const assignment = gameState.controlAssignment;
+        if (assignment &&
+            Number.isInteger(assignment.left) && Number.isInteger(assignment.right) &&
+            assignment.left !== assignment.right) {
+            game.controlAssignment = { left: assignment.left, right: assignment.right };
+        }
+
+        // players may be shorter or longer than game.characters (a save from a
+        // one-player build, or a future third player), so index defensively.
+        if (Array.isArray(gameState.players)) {
+            gameState.players.forEach((saved, i) => {
+                const char = game.characters[i];
+                if (!char || !saved) return;
+                if (typeof saved.x === 'number') char.x = saved.x;
+                if (typeof saved.y === 'number') char.y = saved.y;
+                if (typeof saved.hp === 'number') {
+                    char.hp = Math.max(0, Math.min(saved.hp, char.maxHp));
+                }
+            });
         }
 
         console.log('Game loaded!');
@@ -3919,6 +4349,358 @@ function createExplosion(x, y, radius = 100, damage = 5) {
 }
 
 // Game loop
+// Draw one world-space hint label (chop / dig prompts), centred on x.
+function drawWorldHint(ctx, text, x, y, color) {
+    ctx.save();
+    ctx.font = '12px monospace';
+    ctx.textAlign = 'center';
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 2;
+    ctx.strokeText(text, x, y);
+    ctx.fillStyle = color || 'rgba(255, 255, 255, 0.9)';
+    ctx.fillText(text, x, y);
+    ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
+// drawWorld -- pure rendering, no simulation
+//
+// Renders sky, ground, tiles, mobs, chickens, trees, particles, floating texts
+// and the characters for an ARBITRARY camera. gameLoop calls it for the main
+// view; coop.js calls it again, inside a clip region, for the picture-in-picture
+// inset. Two consequences, both load-bearing:
+//
+//   * it must never read game.camera -- the camera arrives as arguments, and
+//     viewport culling uses viewW/viewH rather than the canvas size;
+//   * it must never mutate game state (no entity update(), no splice()), or the
+//     PIP pass would step the simulation a second time each frame.
+//
+// opts.hud === false suppresses world-space hints and debug boxes so the inset
+// stays readable.
+// ---------------------------------------------------------------------------
+function drawWorld(ctx, camX, camY, viewW, viewH, opts = {}) {
+    const hud = opts.hud !== false;
+    const TILE = 32;
+    // Ground depth is a world constant (canvas.height is its definition), not a
+    // viewport size, so it does not become viewH.
+    const worldGroundY = canvas.height - 50;
+
+    const inView = (b) =>
+        b.x + b.width >= camX && b.x <= camX + viewW &&
+        b.y + b.height >= camY && b.y <= camY + viewH;
+
+    // --- Sky ----------------------------------------------------------------
+    const cyclePos = game.dayNight.elapsed / game.dayNight.cycleDuration;
+    const biomeColors = getBlendedBiomeColors(getBiomeBlend(camX + viewW / 2));
+
+    const SUNSET_COLOR = '#e85d3a';
+    let skyColor;
+    if (cyclePos < 0.40) {
+        skyColor = biomeColors.sky;
+    } else if (cyclePos < 0.55) {
+        const t = (cyclePos - 0.40) / 0.15;
+        skyColor = t < 0.5
+            ? lerpColor(biomeColors.sky, SUNSET_COLOR, t * 2)
+            : lerpColor(SUNSET_COLOR, biomeColors.nightSky, (t - 0.5) * 2);
+    } else if (cyclePos < 0.75) {
+        skyColor = biomeColors.nightSky;
+    } else {
+        const t = (cyclePos - 0.75) / 0.25;
+        skyColor = t < 0.5
+            ? lerpColor(biomeColors.nightSky, SUNSET_COLOR, t * 2)
+            : lerpColor(SUNSET_COLOR, biomeColors.sky, (t - 0.5) * 2);
+    }
+
+    ctx.fillStyle = skyColor;
+    ctx.fillRect(0, 0, viewW, viewH);
+
+    // Stars and moon fade in during evening, stay through night, fade out at dawn
+    const starAlpha = cyclePos >= 0.55 && cyclePos < 0.75 ? 1.0
+        : cyclePos >= 0.40 && cyclePos < 0.55 ? (cyclePos - 0.40) / 0.15
+        : cyclePos >= 0.75 && cyclePos < 1.0 ? 1.0 - (cyclePos - 0.75) / 0.25
+        : 0;
+
+    if (starAlpha > 0) {
+        ctx.save();
+        ctx.globalAlpha = starAlpha;
+        ctx.fillStyle = '#ffffff';
+        for (const star of STARS) {
+            ctx.beginPath();
+            ctx.arc(star.x * viewW, star.y * viewH * 0.8, star.r, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        // Moon: glowing circle top-right
+        ctx.shadowColor = '#fffde7';
+        ctx.shadowBlur = 12;
+        ctx.fillStyle = '#fffde7';
+        ctx.beginPath();
+        ctx.arc(viewW - 60, 40, 14, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+        ctx.restore();
+    }
+
+    // --- Ground -------------------------------------------------------------
+    drawGroundWithHoles(ctx, biomeColors, worldGroundY - camY, skyColor, camX, viewW);
+
+    // --- Placed tiles (before trees, so trees appear on top) -----------------
+    game.placedTiles.forEach(tile => {
+        if (inView(tile.getWorldBounds())) {
+            tile.draw(ctx, camX, camY);
+        }
+    });
+
+    // --- Dug tiles (material blocks from underground) ------------------------
+    if (game.spriteSheets['materials']) {
+        for (const [key, material] of game.dugMaterials) {
+            const [worldGridXStr, depthStr] = key.split(',');
+            const worldGridX = parseInt(worldGridXStr);
+            const depth = parseInt(depthStr);
+            const frameIndex = MATERIAL_FRAMES[material] || 0;
+            const tileY = worldGroundY + depth * TILE;
+
+            const tile = new Tile(game.spriteSheets['materials'], worldGridX, tileY, frameIndex, material);
+            if (inView(tile.getWorldBounds())) {
+                tile.draw(ctx, camX, camY);
+            }
+        }
+    }
+
+    // --- Mobs ---------------------------------------------------------------
+    for (const mob of game.mobs) {
+        if (mob.burnedOut) continue;
+        if (inView(mob.getWorldBounds())) {
+            mob.draw(ctx, camX, camY);
+        }
+        if (hud && game.debugMode) {
+            const bounds = mob.getBounds(camX, camY);
+            ctx.strokeStyle = 'rgba(255, 0, 0, 0.8)';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
+            ctx.fillStyle = 'rgba(255, 0, 0, 0.8)';
+            ctx.font = '10px monospace';
+            ctx.textAlign = 'left';
+            ctx.fillText(mob.mobType, bounds.x, bounds.y - 5);
+        }
+    }
+
+    // --- Chickens (before trees, so trees appear on top) ---------------------
+    for (const chicken of game.chickens) {
+        if (chicken.isDead) continue;
+        if (inView(chicken.getWorldBounds())) {
+            chicken.draw(ctx, camX, camY);
+        }
+        if (hud && game.debugMode) {
+            const bounds = chicken.getBounds(camX, camY);
+            ctx.strokeStyle = 'rgba(255, 200, 0, 0.8)';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
+        }
+    }
+
+    // --- Trees --------------------------------------------------------------
+    game.trees.forEach((tree, index) => {
+        if (inView(tree.getWorldBounds())) {
+            tree.draw(ctx, camX, camY);
+        }
+
+        if (hud && game.debugMode) {
+            // Is any character near this tree? (colours the interaction circle)
+            let isCharacterNear = false;
+            game.characters.forEach(character => {
+                if (character.isNearTree(tree)) isCharacterNear = true;
+            });
+
+            const bounds = tree.getBounds(camX, camY);
+            ctx.strokeStyle = 'rgba(255, 165, 0, 0.8)';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
+
+            // Draw interaction range circle
+            ctx.beginPath();
+            ctx.arc(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2, 120, 0, Math.PI * 2);
+            ctx.strokeStyle = isCharacterNear ? 'rgba(0, 255, 0, 0.5)' : 'rgba(255, 255, 0, 0.5)';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+
+            // Draw frame index label
+            ctx.fillStyle = 'rgba(255, 165, 0, 0.8)';
+            ctx.font = '10px monospace';
+            ctx.textAlign = 'left';
+            ctx.fillText(`Tree ${index} (frame ${tree.frameIndex}, health: ${tree.health})`, bounds.x, bounds.y - 5);
+        }
+    });
+
+    // --- Interaction hints, one per player, labelled with THAT player's key ---
+    if (hud) {
+        for (const char of game.characters) {
+            if (!char) continue;
+            const label = actionKeyLabel(char);
+            const treeIndex = findNearestTreeIndex(char);
+            // Stack the two players' hints so they stay readable when both are
+            // standing at the same tree.
+            const stack = (char.playerIndex || 0) * 14;
+
+            if (treeIndex !== -1) {
+                const bounds = game.trees[treeIndex].getBounds(camX, camY);
+                drawWorldHint(ctx, `Press ${label} to chop`,
+                    bounds.x + bounds.width / 2, bounds.y - 20 - stack, char.color);
+            } else if (char.onGround) {
+                const charWorldBounds = char.getWorldBounds();
+                const holeTileX = Math.floor((charWorldBounds.x + charWorldBounds.width / 2) / TILE) * TILE;
+                const canDigDeeper = !isGroundHole(holeTileX, 0) ||
+                                     !isGroundHole(holeTileX, 1) ||
+                                     !isGroundHole(holeTileX, 2);
+                if (canDigDeeper) {
+                    drawWorldHint(ctx, `Press ${label} to dig`,
+                        charWorldBounds.x - camX + charWorldBounds.width / 2,
+                        charWorldBounds.y - camY - 20 - stack, char.color);
+                }
+            }
+        }
+    }
+
+    // --- Particles and floating texts (after trees, before characters) -------
+    for (const particle of game.particles) {
+        particle.draw(ctx, camX, camY);
+    }
+    for (const floatingText of game.floatingTexts) {
+        floatingText.draw(ctx, camX, camY);
+    }
+
+    // --- Characters ---------------------------------------------------------
+    game.characters.forEach(character => {
+        character.draw(ctx, camX, camY);
+
+        if (hud && game.debugMode) {
+            const bounds = character.getCurrentBounds(camX, camY);
+            ctx.strokeStyle = 'rgba(0, 255, 0, 0.8)';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
+
+            // Draw corner markers
+            ctx.fillStyle = 'rgba(0, 255, 0, 0.8)';
+            const cornerSize = 4;
+            ctx.fillRect(bounds.x - cornerSize / 2, bounds.y - cornerSize / 2, cornerSize, cornerSize);
+            ctx.fillRect(bounds.x + bounds.width - cornerSize / 2, bounds.y - cornerSize / 2, cornerSize, cornerSize);
+            ctx.fillRect(bounds.x - cornerSize / 2, bounds.y + bounds.height - cornerSize / 2, cornerSize, cornerSize);
+            ctx.fillRect(bounds.x + bounds.width - cornerSize / 2, bounds.y + bounds.height - cornerSize / 2, cornerSize, cornerSize);
+        }
+    });
+}
+
+// Fallback camera, used only when coop.js has not defined updateCoopCamera:
+// centre on the midpoint of the players so neither one is favoured.
+function updateDefaultCamera() {
+    const players = game.characters.filter(Boolean);
+    if (!players.length) return;
+
+    let sumX = 0;
+    let sumY = 0;
+    for (const char of players) {
+        const center = playerCenter(char);
+        sumX += center.x;
+        sumY += center.y;
+    }
+
+    const targetCameraX = sumX / players.length - canvas.width / 2;
+    const targetCameraY = sumY / players.length - canvas.height / 2;
+    const cameraLerpSpeed = 0.1;
+    game.camera.x += (targetCameraX - game.camera.x) * cameraLerpSpeed;
+    game.camera.y += (targetCameraY - game.camera.y) * cameraLerpSpeed;
+}
+
+// Debug-only manual camera pan (hold Shift with debug mode on).
+function updateManualCameraScroll() {
+    const scrollSpeed = 5;
+    if (game.keys['ArrowLeft'] || game.keys['a']) game.camera.x -= scrollSpeed;
+    if (game.keys['ArrowRight'] || game.keys['d']) game.camera.x += scrollSpeed;
+    if (game.keys['ArrowUp'] || game.keys['w']) game.camera.y -= scrollSpeed;
+    if (game.keys['ArrowDown'] || game.keys['s']) game.camera.y += scrollSpeed;
+}
+
+// Brief confirmation banner after a hemisphere swap, so both players can see
+// which half of the keyboard is now theirs.
+function drawControlBanner(ctx) {
+    const banner = game.controlBanner;
+    if (!banner || !banner.text) return;
+
+    const remaining = banner.until - Date.now();
+    if (remaining <= 0) return;
+
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, remaining / 500); // fade out over the last 500ms
+    ctx.font = 'bold 16px monospace';
+    ctx.textAlign = 'center';
+
+    const boxWidth = ctx.measureText(banner.text).width + 32;
+    const boxHeight = 34;
+    const boxX = (canvas.width - boxWidth) / 2;
+    const boxY = canvas.height / 2 - 80;
+
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+    ctx.fillRect(boxX, boxY, boxWidth, boxHeight);
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(boxX, boxY, boxWidth, boxHeight);
+
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(banner.text, canvas.width / 2, boxY + 23);
+    ctx.restore();
+}
+
+// Draw one player's HP bar. Stacked so both players are visible.
+function drawPlayerHpBar(ctx, char, slot) {
+    const barWidth = 200;
+    const barHeight = 20;
+    const barX = 10;
+    const barY = 10 + slot * (barHeight + 6);
+
+    // Background
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+    ctx.fillRect(barX, barY, barWidth, barHeight);
+
+    // Health bar
+    const healthPercent = Math.max(0, char.hp / char.maxHp);
+    const healthColor = healthPercent > 0.5 ? '#00dd00' : healthPercent > 0.25 ? '#ffff00' : '#ff0000';
+    ctx.fillStyle = healthColor;
+    ctx.fillRect(barX, barY, barWidth * healthPercent, barHeight);
+
+    // Border in the player's accent colour
+    ctx.strokeStyle = char.color || '#ffffff';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(barX, barY, barWidth, barHeight);
+
+    // Text with shimmer effect (visible on light and dark backgrounds). The
+    // hemisphere marker keeps "who is on which side" visible after the swap
+    // banner has faded.
+    const hemi = HEMISPHERES[char.hemisphere];
+    const sideTag = hemi ? `${hemi.marker} ${hemi.label}` : '';
+    const hpText = `${char.name}  ${Math.ceil(char.hp)}/${char.maxHp}  ${sideTag}`;
+    const textX = barX + 5;
+    const textY = barY + 16;
+
+    ctx.font = '14px monospace';
+    ctx.textAlign = 'left';
+
+    // Shadow for visibility on light backgrounds
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+    ctx.fillText(hpText, textX + 1, textY + 1);
+
+    // Stroke for visibility on dark backgrounds
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = 2;
+    ctx.strokeText(hpText, textX, textY);
+
+    // Main white text
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(hpText, textX, textY);
+}
+
+// ---------------------------------------------------------------------------
+// gameLoop: simulate -> camera -> drawWorld -> overlay hooks -> HUD
+// Everything that mutates state lives here, never in drawWorld.
+// ---------------------------------------------------------------------------
 function gameLoop(timestamp) {
     // Current time
     const now = Date.now();
@@ -3947,61 +4729,32 @@ function gameLoop(timestamp) {
     const phaseChanged = game.dayNight.phase !== prevPhase;
 
     // Auto-save periodically
-    if (Date.now() - lastAutoSave > AUTO_SAVE_INTERVAL) {
+    if (now - lastAutoSave > AUTO_SAVE_INTERVAL) {
         saveGame();
         lastAutoSave = Date.now();
     }
-    
-    // Camera follows the active player character (Steve) by default
-    // Only allow manual scrolling when Shift is held
-    const steve = game.characters[0];
-    if (steve && !game.scrollingMode) {
-        // Camera follows Steve - center him on screen
-        const steveWorldBounds = steve.getWorldBounds();
-        const steveCenterX = steveWorldBounds.x + steveWorldBounds.width / 2;
-        const steveCenterY = steveWorldBounds.y + steveWorldBounds.height / 2;
-        
-        // Smooth camera follow (lerp for smoother movement)
-        const cameraLerpSpeed = 0.1;
-        const targetCameraX = steveCenterX - canvas.width / 2;
-        const targetCameraY = steveCenterY - canvas.height / 2;
-        
-        game.camera.x += (targetCameraX - game.camera.x) * cameraLerpSpeed;
-        game.camera.y += (targetCameraY - game.camera.y) * cameraLerpSpeed;
-    } else if (game.scrollingMode) {
-        // Manual scrolling when Shift is held
-        const scrollSpeed = 5;
-        if (game.keys['ArrowLeft'] || game.keys['a'] || game.keys['A']) {
-            game.camera.x -= scrollSpeed;
-        }
-        if (game.keys['ArrowRight'] || game.keys['d'] || game.keys['D']) {
-            game.camera.x += scrollSpeed;
-        }
-        if (game.keys['ArrowUp'] || game.keys['w'] || game.keys['W']) {
-            game.camera.y -= scrollSpeed;
-        }
-        if (game.keys['ArrowDown'] || game.keys['s'] || game.keys['S']) {
-            game.camera.y += scrollSpeed;
-        }
+
+    // --- Camera -------------------------------------------------------------
+    if (game.scrollingMode) {
+        // Debug pan wins over everything else
+        updateManualCameraScroll();
+    } else if (typeof updateCoopCamera === 'function') {
+        updateCoopCamera(deltaMs);
+    } else {
+        updateDefaultCamera();
     }
-    
+
     // Spawn trees in areas around the camera (procedural generation)
     if (game.spriteSheets.trees) {
         const worldGroundY = canvas.height - 50;
         const cameraCenterX = game.camera.x + canvas.width / 2;
         // Spawn trees in a wider area around the camera (3 screen widths ahead and behind)
         const spawnRange = canvas.width * 3;
-        const spawnStartX = cameraCenterX - spawnRange;
-        const spawnEndX = cameraCenterX + spawnRange;
-        spawnTreesInArea(spawnStartX, spawnEndX, worldGroundY);
+        spawnTreesInArea(cameraCenterX - spawnRange, cameraCenterX + spawnRange, worldGroundY);
     }
-    
-    const playerX = game.camera.x + canvas.width / 2;
-    const biomeBlend = getBiomeBlend(playerX);
+
     // Use the sharp biome boundary for game logic (mob spawning, event triggers).
-    // The blended fromBiome would fire cave events 75 units before the actual cave edge.
-    const currentBiome = getBiome(playerX);
-    const biomeColors = getBlendedBiomeColors(biomeBlend);
+    const currentBiome = getBiome(game.camera.x + canvas.width / 2);
 
     // Detect biome change for cave spider spawning
     // Compare BEFORE updating prevBiome so biomeChanged is true on the transition frame
@@ -4024,7 +4777,6 @@ function gameLoop(timestamp) {
 
     // Phase transition: mark dawn-burning mobs
     if (phaseChanged && game.dayNight.phase === 'DAWN') {
-        const now = Date.now();
         game.mobs.forEach(mob => {
             if (mob.hostile && mob.burnsAtDawn && !mob.burning) {
                 mob.burning = true;
@@ -4054,62 +4806,6 @@ function gameLoop(timestamp) {
         }
     }
 
-    // Compute sky color based on day/night phase
-    const SUNSET_COLOR = '#e85d3a';
-    let skyColor;
-    if (cyclePos < 0.40) {
-        skyColor = biomeColors.sky;
-    } else if (cyclePos < 0.55) {
-        const t = (cyclePos - 0.40) / 0.15;
-        skyColor = t < 0.5
-            ? lerpColor(biomeColors.sky, SUNSET_COLOR, t * 2)
-            : lerpColor(SUNSET_COLOR, biomeColors.nightSky, (t - 0.5) * 2);
-    } else if (cyclePos < 0.75) {
-        skyColor = biomeColors.nightSky;
-    } else {
-        const t = (cyclePos - 0.75) / 0.25;
-        skyColor = t < 0.5
-            ? lerpColor(biomeColors.nightSky, SUNSET_COLOR, t * 2)
-            : lerpColor(SUNSET_COLOR, biomeColors.sky, (t - 0.5) * 2);
-    }
-
-    ctx.fillStyle = skyColor;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    // Stars and moon fade in during evening, stay through night, fade out at dawn
-    const starAlpha = cyclePos >= 0.55 && cyclePos < 0.75 ? 1.0
-        : cyclePos >= 0.40 && cyclePos < 0.55 ? (cyclePos - 0.40) / 0.15
-        : cyclePos >= 0.75 && cyclePos < 1.0 ? 1.0 - (cyclePos - 0.75) / 0.25
-        : 0;
-
-    if (starAlpha > 0) {
-        ctx.save();
-        ctx.globalAlpha = starAlpha;
-        ctx.fillStyle = '#ffffff';
-        for (const star of STARS) {
-            ctx.beginPath();
-            ctx.arc(star.x * canvas.width, star.y * canvas.height * 0.8, star.r, 0, Math.PI * 2);
-            ctx.fill();
-        }
-        // Moon: glowing circle top-right
-        ctx.shadowColor = '#fffde7';
-        ctx.shadowBlur = 12;
-        ctx.fillStyle = '#fffde7';
-        ctx.beginPath();
-        ctx.arc(canvas.width - 60, 40, 14, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.shadowBlur = 0;
-        ctx.restore();
-    }
-    
-    // Draw ground with biome colors
-    // Ground is at fixed world Y position, convert to screen coordinates
-    const worldGroundY = canvas.height - 50; // Fixed world ground Y position
-    const screenGroundY = worldGroundY - game.camera.y; // Convert to screen coordinates
-
-    // Draw ground with holes where dug
-    drawGroundWithHoles(ctx, biomeColors, screenGroundY, skyColor);
-    
     // Check for trees that should regrow
     const currentTime = Date.now();
     for (let i = game.treeRegrowthQueue.length - 1; i >= 0; i--) {
@@ -4120,130 +4816,49 @@ function gameLoop(timestamp) {
             let canRegrow = true;
             for (const existingTree of game.trees) {
                 const existingWorldBounds = existingTree.getWorldBounds();
-                const distance = Math.abs(existingWorldBounds.x - regrowth.x);
-                if (distance < minDistance) {
+                if (Math.abs(existingWorldBounds.x - regrowth.x) < minDistance) {
                     canRegrow = false;
                     break;
                 }
             }
-            
+
             // Also check if any character is too close
             if (canRegrow) {
                 for (const character of game.characters) {
                     const charWorldBounds = character.getWorldBounds();
-                    const distance = Math.abs(charWorldBounds.x - regrowth.x);
-                    if (distance < 100) { // Don't regrow if character is too close
+                    if (Math.abs(charWorldBounds.x - regrowth.x) < 100) {
                         canRegrow = false;
                         break;
                     }
                 }
             }
-            
+
             if (canRegrow && game.spriteSheets.trees) {
                 // Regrow the tree at world position
                 const newTree = new Tree(game.spriteSheets.trees, regrowth.x, 0, regrowth.frameIndex);
-                // Use world ground Y (same as initial tree positioning)
-                const worldGroundY = canvas.height - 50;
-                newTree.y = newTree.getBaseYPosition(worldGroundY);
+                newTree.y = newTree.getBaseYPosition(canvas.height - 50);
+                // Pushed onto the end of game.trees, so nobody's
+                // mining.targetTreeIndex shifts.
                 game.trees.push(newTree);
                 console.log(`Tree regrew at world x=${regrowth.x}`);
             }
-            
+
             // Remove from regrowth queue
             game.treeRegrowthQueue.splice(i, 1);
         }
     }
-    
-    // Find the nearest tree to Steve (for showing interaction hint)
-    let nearestTreeIndex = -1;
-    let nearestDistance = Infinity;
-    if (steve) {
-        for (let i = 0; i < game.trees.length; i++) {
-            const tree = game.trees[i];
-            if (steve.isNearTree(tree)) {
-                const steveWorldBounds = steve.getWorldBounds();
-                const steveCenterX = steveWorldBounds.x + steveWorldBounds.width / 2;
-                const steveCenterY = steveWorldBounds.y + steveWorldBounds.height / 2;
-                const treeWorldBounds = tree.getWorldBounds();
-                const treeCenterX = treeWorldBounds.x + treeWorldBounds.width / 2;
-                const treeCenterY = treeWorldBounds.y + treeWorldBounds.height / 2;
-                
-                const dx = steveCenterX - treeCenterX;
-                const dy = steveCenterY - treeCenterY;
-                const distance = Math.sqrt(dx * dx + dy * dy);
-                
-                if (distance < nearestDistance) {
-                    nearestDistance = distance;
-                    nearestTreeIndex = i;
-                }
-            }
-        }
-    }
-    
-    // Draw placed tiles (before trees, so trees appear on top)
-    // Only draw tiles that are visible in the viewport
-    game.placedTiles.forEach(tile => {
-        const worldBounds = tile.getWorldBounds();
-        // Check if tile is in viewport
-        if (worldBounds.x + worldBounds.width >= game.camera.x &&
-            worldBounds.x <= game.camera.x + canvas.width &&
-            worldBounds.y + worldBounds.height >= game.camera.y &&
-            worldBounds.y <= game.camera.y + canvas.height) {
-            tile.draw(ctx, game.camera.x, game.camera.y);
-        }
-    });
 
-    // Draw dug tiles (material blocks from underground)
-    if (game.spriteSheets['materials']) {
-        for (const [key, material] of game.dugMaterials) {
-            const [worldGridXStr, depthStr] = key.split(',');
-            const worldGridX = parseInt(worldGridXStr);
-            const depth = parseInt(depthStr);
-            const frameIndex = MATERIAL_FRAMES[material] || 0;
-            const worldGroundY = canvas.height - 50;
-            const tileY = worldGroundY + depth * 32;
-
-            const tile = new Tile(game.spriteSheets['materials'], worldGridX, tileY, frameIndex, material);
-            const worldBounds = tile.getWorldBounds();
-
-            // Check if tile is in viewport
-            if (worldBounds.x + worldBounds.width >= game.camera.x &&
-                worldBounds.x <= game.camera.x + canvas.width &&
-                worldBounds.y + worldBounds.height >= game.camera.y &&
-                worldBounds.y <= game.camera.y + canvas.height) {
-                tile.draw(ctx, game.camera.x, game.camera.y);
-            }
-        }
-    }
-
-    // Update and draw mobs — iterate backwards to allow splice
+    // --- Simulation ---------------------------------------------------------
+    // Update mobs — iterate backwards to allow splice
     for (let i = game.mobs.length - 1; i >= 0; i--) {
         const mob = game.mobs[i];
         mob.update();
         if (mob.burnedOut) {
             game.mobs.splice(i, 1);
-            continue;
-        }
-        const mobWorldBounds = mob.getWorldBounds();
-        if (mobWorldBounds.x + mobWorldBounds.width >= game.camera.x &&
-            mobWorldBounds.x <= game.camera.x + canvas.width &&
-            mobWorldBounds.y + mobWorldBounds.height >= game.camera.y &&
-            mobWorldBounds.y <= game.camera.y + canvas.height) {
-            mob.draw(ctx, game.camera.x, game.camera.y);
-        }
-        if (game.debugMode) {
-            const bounds = mob.getBounds(game.camera.x, game.camera.y);
-            ctx.strokeStyle = 'rgba(255, 0, 0, 0.8)';
-            ctx.lineWidth = 2;
-            ctx.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
-            ctx.fillStyle = 'rgba(255, 0, 0, 0.8)';
-            ctx.font = '10px monospace';
-            ctx.textAlign = 'left';
-            ctx.fillText(mob.mobType, bounds.x, bounds.y - 5);
         }
     }
-    
-    // Update and draw chickens (before trees, so trees appear on top)
+
+    // Update chickens — iterate backwards to allow splice
     for (let i = game.chickens.length - 1; i >= 0; i--) {
         const chicken = game.chickens[i];
 
@@ -4255,512 +4870,53 @@ function gameLoop(timestamp) {
         }
 
         chicken.update();
-        const chickenWorldBounds = chicken.getWorldBounds();
-        // Only draw if chicken is in viewport
-        if (chickenWorldBounds.x + chickenWorldBounds.width >= game.camera.x &&
-            chickenWorldBounds.x <= game.camera.x + canvas.width &&
-            chickenWorldBounds.y + chickenWorldBounds.height >= game.camera.y &&
-            chickenWorldBounds.y <= game.camera.y + canvas.height) {
-            chicken.draw(ctx, game.camera.x, game.camera.y);
-        }
-
-        // Draw bounding boxes in debug mode
-        if (game.debugMode) {
-            const bounds = chicken.getBounds(game.camera.x, game.camera.y);
-            ctx.strokeStyle = 'rgba(255, 200, 0, 0.8)';
-            ctx.lineWidth = 2;
-            ctx.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
-        }
-    }
-    
-    // Draw trees (only those in viewport)
-    game.trees.forEach((tree, index) => {
-        const treeWorldBounds = tree.getWorldBounds();
-        // Check if tree is in viewport
-        if (treeWorldBounds.x + treeWorldBounds.width >= game.camera.x &&
-            treeWorldBounds.x <= game.camera.x + canvas.width &&
-            treeWorldBounds.y + treeWorldBounds.height >= game.camera.y &&
-            treeWorldBounds.y <= game.camera.y + canvas.height) {
-            tree.draw(ctx, game.camera.x, game.camera.y);
-        }
-        
-        // Check if any character is near this tree (for debug mode)
-        let isCharacterNear = false;
-        game.characters.forEach(character => {
-            if (character.isNearTree(tree)) {
-                isCharacterNear = true;
-            }
-        });
-        
-        // Debug: draw tree bounds and interaction range in debug mode
-        if (game.debugMode) {
-            const bounds = tree.getBounds(game.camera.x, game.camera.y);
-            ctx.strokeStyle = 'rgba(255, 165, 0, 0.8)';
-            ctx.lineWidth = 2;
-            ctx.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
-            
-            // Draw interaction range circle
-            const centerX = bounds.x + bounds.width / 2;
-            const centerY = bounds.y + bounds.height / 2;
-            ctx.beginPath();
-            ctx.arc(centerX, centerY, 120, 0, Math.PI * 2);
-            ctx.strokeStyle = isCharacterNear ? 'rgba(0, 255, 0, 0.5)' : 'rgba(255, 255, 0, 0.5)';
-            ctx.lineWidth = 1;
-            ctx.stroke();
-            
-            // Draw frame index label
-            ctx.fillStyle = 'rgba(255, 165, 0, 0.8)';
-            ctx.font = '10px monospace';
-            ctx.textAlign = 'left';
-            ctx.fillText(`Tree ${index} (frame ${tree.frameIndex}, health: ${tree.health})`, bounds.x, bounds.y - 5);
-        }
-        
-        // Show interaction hint only on the nearest tree to Steve
-        if (index === nearestTreeIndex && steve) {
-            const bounds = tree.getBounds(game.camera.x, game.camera.y);
-            ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
-            ctx.strokeStyle = '#000';
-            ctx.lineWidth = 2;
-            ctx.font = '12px monospace';
-            ctx.textAlign = 'center';
-            const textX = bounds.x + bounds.width / 2;
-            const textY = bounds.y - 20;
-            ctx.strokeText('Press E to chop', textX, textY);
-            ctx.fillText('Press E to chop', textX, textY);
-        }
-    });
-
-    // Show dig hint if on ground and no trees in range
-    if (steve && steve.onGround && nearestTreeIndex === -1) {
-        const TILE = 32;
-        const steveWorldBounds = steve.getWorldBounds();
-        const charCenterX = steveWorldBounds.x + steveWorldBounds.width / 2;
-        const holeTileX = Math.floor(charCenterX / TILE) * TILE;
-        const worldGroundY = canvas.height - 50;
-
-        // Check if we can dig deeper
-        const canDigDeeper = !isGroundHole(holeTileX, 0) ||
-                             !isGroundHole(holeTileX, 1) ||
-                             !isGroundHole(holeTileX, 2);
-
-        if (canDigDeeper) {
-            const screenX = steveWorldBounds.x - game.camera.x + steveWorldBounds.width / 2;
-            const screenY = steveWorldBounds.y - game.camera.y - 20;
-            ctx.fillStyle = 'rgba(255,255,255,0.9)';
-            ctx.strokeStyle = '#000';
-            ctx.lineWidth = 2;
-            ctx.font = '12px monospace';
-            ctx.textAlign = 'center';
-            ctx.strokeText('Press E to dig', screenX, screenY);
-            ctx.fillText('Press E to dig', screenX, screenY);
-        }
     }
 
-    // Update and draw particles (after trees, before characters)
+    // Update particles
     for (let i = game.particles.length - 1; i >= 0; i--) {
         const particle = game.particles[i];
         particle.update();
-        // Pass camera offset to convert world coordinates to screen coordinates
-        particle.draw(ctx, game.camera.x, game.camera.y);
-
-        // Remove dead particles
         if (particle.isDead()) {
             game.particles.splice(i, 1);
         }
     }
 
-    // Update and draw floating texts
+    // Update floating texts
     for (let i = game.floatingTexts.length - 1; i >= 0; i--) {
         const floatingText = game.floatingTexts[i];
         floatingText.update();
-        floatingText.draw(ctx, game.camera.x, game.camera.y);
-
-        // Remove expired texts
         if (floatingText.isDone()) {
             game.floatingTexts.splice(i, 1);
         }
     }
 
-    // Handle continuous mining
-    const isEPressed = game.keys['e'] || game.keys['E'];
-
-    // If E is pressed but we're not mining, try to start mining
-    // But don't start mining if there's a mob in range - prioritize combat.
-    // This runs every frame E is held, so it must also stand down while a dig is
-    // under way or while the player is holding the dig key -- otherwise a tree
-    // within isNearTree range silently hijacks a dig that already started.
-    const digIntentHeld = game.keys['ArrowDown'] || game.keys['s'] || game.keys['S'];
-    if (isEPressed && !game.mining.isMining && steve && !digIntentHeld && !game.digging.isDigging) {
-        // Check if there's a mob/creature in attack range
-        let mobInRange = false;
-        const steveWorldBounds = steve.getWorldBounds();
-        const steveCenterX = steveWorldBounds.x + steveWorldBounds.width / 2;
-        const steveCenterY = steveWorldBounds.y + steveWorldBounds.height / 2;
-
-        for (const mob of game.mobs) {
-            if (mob.burnedOut) continue;
-            const mobCenterX = mob.x + mob.width / 2;
-            const mobCenterY = mob.y + mob.height / 2;
-            const dx = mobCenterX - steveCenterX;
-            const dy = mobCenterY - steveCenterY;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-
-            if (dist < steve.attackRange) {
-                mobInRange = true;
-                break;
-            }
-        }
-
-        // Check for chickens in range
-        if (!mobInRange) {
-            for (const chicken of game.chickens) {
-                if (chicken.isDead) continue;
-                const chickenCenterX = chicken.x + chicken.width / 2;
-                const chickenCenterY = chicken.y + chicken.height / 2;
-                const dx = chickenCenterX - steveCenterX;
-                const dy = chickenCenterY - steveCenterY;
-                const dist = Math.sqrt(dx * dx + dy * dy);
-
-                if (dist < steve.attackRange) {
-                    mobInRange = true;
-                    break;
-                }
-            }
-        }
-
-        // Only start mining if there's no mob in range
-        if (!mobInRange) {
-            // Find the nearest tree to Steve
-            let nearestTree = null;
-            let nearestDistance = Infinity;
-            let nearestTreeIndex = -1;
-
-            for (let i = 0; i < game.trees.length; i++) {
-                const tree = game.trees[i];
-                if (steve.isNearTree(tree)) {
-                    const treeWorldBounds = tree.getWorldBounds();
-                    const treeCenterX = treeWorldBounds.x + treeWorldBounds.width / 2;
-                    const treeCenterY = treeWorldBounds.y + treeWorldBounds.height / 2;
-
-                    const dx = steveCenterX - treeCenterX;
-                    const dy = steveCenterY - treeCenterY;
-                    const distance = Math.sqrt(dx * dx + dy * dy);
-
-                    if (distance < nearestDistance) {
-                        nearestDistance = distance;
-                        nearestTree = tree;
-                        nearestTreeIndex = i;
-                    }
-                }
-            }
-
-            if (nearestTree) {
-                // Start mining - set state and track target tree
-                game.mining.isMining = true;
-                game.mining.targetTreeIndex = nearestTreeIndex;
-                game.mining.lastHitTime = Date.now();
-                steve.state = 'mine';
-            }
-        }
-    }
-    
-    // Continue mining if E is held and we have a target
-    if (game.mining.isMining && game.mining.targetTreeIndex >= 0 && isEPressed) {
-        const targetTreeIndex = game.mining.targetTreeIndex;
-
-        // Check if there's a mob in range - if so, stop mining and let combat take priority
-        let mobInRange = false;
-        const steveWorldBounds = steve.getWorldBounds();
-        const steveCenterX = steveWorldBounds.x + steveWorldBounds.width / 2;
-        const steveCenterY = steveWorldBounds.y + steveWorldBounds.height / 2;
-
-        for (const mob of game.mobs) {
-            if (mob.burnedOut) continue;
-            const mobCenterX = mob.x + mob.width / 2;
-            const mobCenterY = mob.y + mob.height / 2;
-            const dx = mobCenterX - steveCenterX;
-            const dy = mobCenterY - steveCenterY;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-
-            if (dist < steve.attackRange) {
-                mobInRange = true;
-                break;
-            }
-        }
-
-        if (!mobInRange) {
-            for (const chicken of game.chickens) {
-                if (chicken.isDead) continue;
-                const chickenCenterX = chicken.x + chicken.width / 2;
-                const chickenCenterY = chicken.y + chicken.height / 2;
-                const dx = chickenCenterX - steveCenterX;
-                const dy = chickenCenterY - steveCenterY;
-                const dist = Math.sqrt(dx * dx + dy * dy);
-
-                if (dist < steve.attackRange) {
-                    mobInRange = true;
-                    break;
-                }
-            }
-        }
-
-        // Only continue mining if no mob is in range
-        if (!mobInRange && targetTreeIndex < game.trees.length && steve) {
-            const targetTree = game.trees[targetTreeIndex];
-
-            if (steve.isNearTree(targetTree)) {
-                // Check if enough time has passed since last hit
-                const currentTime = Date.now();
-                if (currentTime - game.mining.lastHitTime >= game.mining.hitInterval) {
-                    // Calculate hit position (where Steve's axe meets the tree)
-                    const steveWorldBounds = steve.getWorldBounds();
-                    const treeWorldBounds = targetTree.getWorldBounds();
-                    
-                    // Hit position is at the intersection between Steve and tree (world coordinates)
-                    let hitX, hitY;
-                    if (steve.facing === 'right') {
-                        // Steve facing right, hitting left side of tree
-                        hitX = treeWorldBounds.x;
-                        hitY = steveWorldBounds.y + steveWorldBounds.height * 0.4; // Middle-upper part of character
-                    } else {
-                        // Steve facing left, hitting right side of tree
-                        hitX = treeWorldBounds.x + treeWorldBounds.width;
-                        hitY = steveWorldBounds.y + steveWorldBounds.height * 0.4;
-                    }
-                    
-                    // Create spark particles at hit location
-                    const sparkCount = 6 + Math.floor(Math.random() * 4); // 6-9 sparks
-                    for (let i = 0; i < sparkCount; i++) {
-                        const spark = new SparkParticle(hitX, hitY);
-                        game.particles.push(spark);
-                    }
-                    
-                    // Hit the tree
-                    const treeDestroyed = targetTree.hit();
-                    if (treeDestroyed) {
-                        // Tree destroyed - create wood particle explosion
-                        const destroyedTreeWorldBounds = targetTree.getWorldBounds();
-                        const treeCenterX = destroyedTreeWorldBounds.x + destroyedTreeWorldBounds.width / 2;
-                        const treeCenterY = destroyedTreeWorldBounds.y + destroyedTreeWorldBounds.height / 2;
-                        
-                        // Get wood sprite frame index
-                        const woodFrameIndex = (game.inventoryMappings && game.inventoryMappings.wood !== null && game.inventoryMappings.wood !== undefined) 
-                            ? game.inventoryMappings.wood 
-                            : 0;
-                        
-                        // Create 5-8 wood particles exploding from tree center
-                        const particleCount = 5 + Math.floor(Math.random() * 4);
-                        const inventorySheet = game.spriteSheets['inventory'];
-                        if (inventorySheet) {
-                            for (let i = 0; i < particleCount; i++) {
-                                const particle = new WoodParticle(
-                                    inventorySheet,
-                                    woodFrameIndex,
-                                    treeCenterX,
-                                    treeCenterY
-                                );
-                                game.particles.push(particle);
-                            }
-                        }
-                        
-                        // Tree destroyed - add wood to inventory
-                        game.inventory.wood += 1;
-                        console.log(`Chopped down tree! Wood: ${game.inventory.wood}`);
-                        
-                        // Store tree info for regrowth before removing
-                        const destroyedTree = targetTree;
-                        
-                        // Schedule tree regrowth (random delay between 10-30 seconds)
-                        const regrowthDelay = 10000 + Math.random() * 20000; // 10-30 seconds
-                        game.treeRegrowthQueue.push({
-                            x: destroyedTreeWorldBounds.x,
-                            frameIndex: destroyedTree.frameIndex,
-                            regrowAt: Date.now() + regrowthDelay
-                        });
-                        
-                        // Remove tree
-                        game.trees.splice(targetTreeIndex, 1);
-                        // Stop mining
-                        game.mining.isMining = false;
-                        game.mining.targetTreeIndex = -1;
-                        // Return to idle after a brief delay
-                        setTimeout(() => {
-                            if (steve.state === 'mine') {
-                                steve.state = 'idle';
-                            }
-                        }, 300);
-                    } else {
-                        console.log(`Chopping tree... (${targetTree.health}/${targetTree.maxHealth} hits remaining)`);
-                        game.mining.lastHitTime = currentTime;
-                    }
-                }
-            } else {
-                // Steve moved away from tree, stop mining
-                game.mining.isMining = false;
-                game.mining.targetTreeIndex = -1;
-                if (steve.state === 'mine') {
-                    steve.state = 'idle';
-                }
-            }
-        } else {
-            // Stop mining if mob in range, or tree was removed, or steve moved away
-            game.mining.isMining = false;
-            game.mining.targetTreeIndex = -1;
-            if (steve && steve.state === 'mine') {
-                steve.state = 'idle';
-            }
-        }
-    } else if (!isEPressed && game.mining.isMining) {
-        // E key released, stop mining
-        game.mining.isMining = false;
-        game.mining.targetTreeIndex = -1;
-        if (steve && steve.state === 'mine') {
-            steve.state = 'idle';
-        }
+    // Continue each player's own held action (chop / dig)
+    for (const char of game.characters) {
+        updatePlayerAction(char, now);
     }
 
-    // Continue ground digging if E is held
-    if (game.digging.isDigging && game.digging.targetTileX !== null && isEPressed && steve) {
-        const now = Date.now();
-        const { targetTileX, targetDepth } = game.digging;
-
-        // Check if Steve moved away or if mob came into range
-        const steveWorldBounds = steve.getWorldBounds();
-        const charCenterX = steveWorldBounds.x + steveWorldBounds.width / 2;
-        const TILE = 32;
-        const currentTileX = Math.floor(charCenterX / TILE) * TILE;
-
-        // Check for mob in range while digging
-        let mobInRange = false;
-        for (const mob of game.mobs) {
-            if (mob.burnedOut) continue;
-            const mobCenterX = mob.x + mob.width / 2;
-            const mobCenterY = mob.y + mob.height / 2;
-            const dx = mobCenterX - charCenterX;
-            const dy = mobCenterY - steveWorldBounds.y;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            if (dist < steve.attackRange) {
-                mobInRange = true;
-                break;
-            }
-        }
-
-        if (currentTileX !== game.digging.originTileX || mobInRange) {
-            // Abort digging - moved away or mob came in range
-            game.digging.isDigging = false;
-            if (steve.state === 'mine') steve.state = 'idle';
-        } else if (now - game.digging.lastHitTime >= game.digging.hitInterval) {
-            // Time to dig!
-            const biome = getBiome(targetTileX + TILE / 2);
-            const material = getGroundMaterial(biome, targetDepth);
-
-            // Add to inventory
-            game.inventory[material] = (game.inventory[material] || 0) + 1;
-
-            // Create the hole with visual tile
-            digGroundHole(targetTileX, targetDepth, material);
-
-            // Particle effect
-            const worldGroundY = canvas.height - 50;
-            spawnDigParticles(targetTileX + TILE / 2, worldGroundY + targetDepth * TILE + TILE / 2, material, 8);
-
-            // Move to next target based on direction
-            const direction = game.digging.direction;
-            if (direction === 'down') {
-                // Sink the shaft one layer deeper
-                game.digging.targetDepth++;
-            } else if (direction === 'left') {
-                // Extend the tunnel sideways at the same depth
-                game.digging.targetTileX -= TILE;
-            } else if (direction === 'right') {
-                game.digging.targetTileX += TILE;
-            }
-
-            // Reset timer to continue digging
-            game.digging.lastHitTime = now;
-
-            // Save progress
-            saveGame();
-        }
-    } else if (!isEPressed && game.digging.isDigging) {
-        // E key released, stop digging
-        game.digging.isDigging = false;
-        if (steve && steve.state === 'mine') steve.state = 'idle';
-    }
-
-    // Update and draw characters
+    // Update characters
     game.characters.forEach(character => {
         character.update(deltaMs);
-        character.draw(ctx, game.camera.x, game.camera.y);
-        
-        // Draw bounding boxes in debug mode
-        if (game.debugMode) {
-            const bounds = character.getCurrentBounds(game.camera.x, game.camera.y);
-            ctx.strokeStyle = 'rgba(0, 255, 0, 0.8)';
-            ctx.lineWidth = 2;
-            ctx.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
-            
-            // Draw corner markers
-            ctx.fillStyle = 'rgba(0, 255, 0, 0.8)';
-            const cornerSize = 4;
-            ctx.fillRect(bounds.x - cornerSize/2, bounds.y - cornerSize/2, cornerSize, cornerSize);
-            ctx.fillRect(bounds.x + bounds.width - cornerSize/2, bounds.y - cornerSize/2, cornerSize, cornerSize);
-            ctx.fillRect(bounds.x - cornerSize/2, bounds.y + bounds.height - cornerSize/2, cornerSize, cornerSize);
-            ctx.fillRect(bounds.x + bounds.width - cornerSize/2, bounds.y + bounds.height - cornerSize/2, cornerSize, cornerSize);
-        }
     });
-    
-    // Draw HP bar for Steve
-    const char = game.characters[0];
-    if (char) {
-        const barWidth = 200;
-        const barHeight = 20;
-        const barX = 10;
-        const barY = 10;
 
-        // Background
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-        ctx.fillRect(barX, barY, barWidth, barHeight);
+    // --- Render -------------------------------------------------------------
+    drawWorld(ctx, game.camera.x, game.camera.y, canvas.width, canvas.height);
 
-        // Health bar
-        const healthPercent = Math.max(0, char.hp / char.maxHp);
-        const healthColor = healthPercent > 0.5 ? '#00dd00' : healthPercent > 0.25 ? '#ffff00' : '#ff0000';
-        ctx.fillStyle = healthColor;
-        ctx.fillRect(barX, barY, barWidth * healthPercent, barHeight);
+    // Split-screen inset and off-screen beacons (coop.js)
+    if (typeof drawCoopOverlay === 'function') drawCoopOverlay(ctx);
 
-        // Border
-        ctx.strokeStyle = '#ffffff';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(barX, barY, barWidth, barHeight);
-
-        // Text with shimmer effect (visible on light and dark backgrounds)
-        const hpText = `HP: ${Math.ceil(char.hp)}/${char.maxHp}`;
-        const textX = barX + 5;
-        const textY = barY + 16;
-
-        ctx.font = '14px monospace';
-        ctx.textAlign = 'left';
-
-        // Shadow for visibility on light backgrounds
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
-        ctx.fillText(hpText, textX + 1, textY + 1);
-
-        // Stroke for visibility on dark backgrounds
-        ctx.strokeStyle = '#000000';
-        ctx.lineWidth = 2;
-        ctx.strokeText(hpText, textX, textY);
-
-        // Main white text
-        ctx.fillStyle = '#ffffff';
-        ctx.fillText(hpText, textX, textY);
-    }
+    // --- HUD ----------------------------------------------------------------
+    game.characters.forEach((char, i) => {
+        if (char) drawPlayerHpBar(ctx, char, i);
+    });
 
     // Draw inventory UI
     drawInventory(ctx);
 
     // Draw material palette UI
     drawMaterialPalette(ctx);
-    
+
     // Draw placement preview cursor if in placement mode
     if (game.placementMode && game.selectedMaterial && game.materialsMappings && game.spriteSheets['materials']) {
         const materialsSheet = game.spriteSheets['materials'];
@@ -4769,34 +4925,33 @@ function gameLoop(timestamp) {
             // Convert screen coordinates to world coordinates
             const worldX = mouseX + game.camera.x;
             const worldY = mouseY + game.camera.y;
-            
+
             // Calculate tile grid position (snap to grid) in world coordinates
             const tileSize = 32; // Match tile size used in Tile class
             const worldGridX = Math.floor(worldX / tileSize) * tileSize;
             const worldGridY = Math.floor(worldY / tileSize) * tileSize;
-            
+
             // Convert back to screen coordinates for drawing
             const screenGridX = worldGridX - game.camera.x;
             const screenGridY = worldGridY - game.camera.y;
-            
+
             // Draw preview with transparency
             ctx.save();
             ctx.globalAlpha = 0.5;
-            const scale = tileSize / materialsSheet.frameWidth;
-            materialsSheet.drawFrame(ctx, frameIndex, screenGridX, screenGridY, scale);
+            materialsSheet.drawFrame(ctx, frameIndex, screenGridX, screenGridY, tileSize / materialsSheet.frameWidth);
             ctx.restore();
-            
+
             // Draw grid outline
             ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
             ctx.lineWidth = 1;
             ctx.strokeRect(screenGridX, screenGridY, tileSize, tileSize);
         }
     }
-    
+
     // Debug: time-of-day overlay
     if (game.debugMode) {
-        const minutes = Math.floor((game.dayNight.elapsed / game.dayNight.cycleDuration) * 10);
-        const seconds = Math.floor(((game.dayNight.elapsed / game.dayNight.cycleDuration) * 600) % 60);
+        const minutes = Math.floor(cyclePos * 10);
+        const seconds = Math.floor((cyclePos * 600) % 60);
         const timeStr = `${game.dayNight.phase}  ${minutes}:${String(seconds).padStart(2, '0')} / 10:00`;
         ctx.save();
         ctx.font = 'bold 13px monospace';
@@ -4804,11 +4959,18 @@ function gameLoop(timestamp) {
         const pad = 8;
         const tw = ctx.measureText(timeStr).width + pad * 2;
         ctx.fillStyle = 'rgba(0,0,0,0.55)';
-        ctx.fillRect(8, 8, tw, 22);
+        ctx.fillRect(8, canvas.height - 30, tw, 22);
         ctx.fillStyle = '#ffffff';
-        ctx.fillText(timeStr, 8 + pad, 24);
+        ctx.fillText(timeStr, 8 + pad, canvas.height - 14);
         ctx.restore();
     }
+
+    // Hemisphere-swap confirmation
+    drawControlBanner(ctx);
+
+    // Minimap (minimap.js), then the tech panel last so it sits on top
+    if (typeof drawMinimap === 'function') drawMinimap(ctx);
+    if (typeof drawTechPanel === 'function') drawTechPanel(ctx);
 
     requestAnimationFrame(gameLoop);
 }
@@ -4919,12 +5081,16 @@ function drawMaterialPalette(ctx) {
 
 // Handle mouse clicks for tile placement
 canvas.addEventListener('click', (e) => {
-    if (!game.placementMode || !game.selectedMaterial || !game.materialsMappings) return;
-    
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
-    
+
+    // The tech panel gets first refusal on the click, so a click inside the
+    // open panel never also places a tile behind it.
+    if (typeof techPanelClick === 'function' && techPanelClick(x, y)) return;
+
+    if (!game.placementMode || !game.selectedMaterial || !game.materialsMappings) return;
+
     // Check if click is within game area (not on UI)
     if (x < 10 || y < 10) return; // Avoid clicking on UI elements
     

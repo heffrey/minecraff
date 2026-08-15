@@ -1,10 +1,25 @@
 # Minecraff - 8-bit Adventure Game
 
-A 2D browser-based adventure game featuring Alex and Steve. Chop trees, collect resources, build structures, survive the night, and explore diverse biomes.
+A 2D browser-based adventure game featuring Alex and Steve. Chop trees, collect
+resources, build structures, survive the night, and explore diverse biomes.
+
+Built for two people at one laptop: the keyboard is split into a left half and a
+right half, and either player can take either half.
 
 ## Features
 
-- **Two Playable Characters**: Steve (arrow keys) and Alex (WASD)
+- **Two Playable Characters, fully equal**: Steve and Alex can both move, jump,
+  attack, chop and dig. Neither is a passenger
+- **Split-hemisphere controls**: one player drives the left half of the keyboard,
+  the other the right. Press **Backspace** to swap sides
+- **Picture-in-picture**: walk far enough apart and the trailing player gets their
+  own inset view, so nobody is dragged along by the other's camera
+- **Beacons**: an off-screen partner shows up as a chevron at the screen edge with
+  their distance, plus a column of light rising from where they are standing
+- **Minimap**: a strip across the bottom showing biomes, both players, the tunnels
+  you have dug, and how far apart you are
+- **Tech Tree and Workshop**: research nodes with real material costs, and a
+  workshop for crafting (unlock effects are still placeholders)
 - **Day/Night Cycle**: 10-minute full cycle — DAY, EVENING, NIGHT, DAWN — with phase-based sky colors, stars, and a moon
 - **Night Enemies**: Zombies, skeletons, and creepers spawn at night and burn at dawn
 - **Biomes**: Grassland, Sand, Swamp (slimes at evening), Cave (spiders, always hostile), Snow
@@ -21,42 +36,74 @@ A 2D browser-based adventure game featuring Alex and Steve. Chop trees, collect 
 
 ## Controls
 
-### Steve
-- **Arrow Left/Right**: Move
-- **Arrow Up / Space**: Jump
-- **E**: Chop nearby trees; dig ground (no trees nearby)
+The keyboard is split into two hemispheres. Each player owns one; the bindings
+belong to the *side*, not to the character, so swapping sides swaps who drives
+what.
 
-### Alex
-- **A/D**: Move
-- **W**: Jump
+| | Left hemisphere | Right hemisphere |
+|---|---|---|
+| Move | **A** / **D** | **←** / **→** |
+| Jump | **W** | **↑** |
+| Duck / dig down | **S** | **↓** |
+| Act | **F** (or **E**) | **/** (or **.**) |
 
-Alex can move and jump only. The **E** action key (attack, chop, dig) is wired to
-Steve alone.
+By default Alex is on the left and Steve is on the right.
+
+- **Backspace**: swap sides. An on-screen banner confirms who ended up where, and
+  the in-game hints ("Press F to chop") update to name each player's new key
+
+Both players act independently and at the same time — one can be felling a tree
+while the other is halfway down a mine shaft.
+
+### Acting
+
+Your action key does the first thing that applies: attack a mob in range, chop a
+nearby tree, then dig. Trees count within 120px and they regrow, so the same spot
+can chop one minute and dig the next.
+
+**Hold your down key (S or ↓) with your action key when you mean to dig** — that
+skips the attack and chop checks entirely.
 
 ### Digging and Tunneling
-- **E + Arrow Down / S**: Dig down — always digs, even next to a tree or animal
-- **E**: Dig straight down, but only when nothing else is in reach (see below)
-- **E + Arrow Left / A**: Tunnel left at the current depth
-- **E + Arrow Right / D**: Tunnel right at the current depth
+
+- **Act + down**: dig down, always, even next to a tree or animal
+- **Act** alone: dig straight down, but only when nothing else is in reach
+- **Act + left**: tunnel left at the current depth
+- **Act + right**: tunnel right at the current depth
+- **Act + up** does *not* dig — up is reserved for jumping
 
 Hold the keys; digging is continuous at ~300ms per block, down to 50 layers.
 
-Bare **E** does the first thing that applies: attack a mob in range, chop a
-nearby tree, then dig. Trees are detected within 120px and they regrow, so the
-same spot can chop one minute and dig the next. **Hold Down/S with E when you
-mean to dig** — that skips the attack and chop checks entirely.
+Digging stops if you walk to another tile, a mob comes into range, or you release
+your action key.
 
-Digging stops if you walk to another tile, a mob comes into range, or you
-release E.
+### Playing apart
 
-### General
+Walk far enough apart horizontally and the view splits: the main view stays with
+Steve and Alex gets a picture-in-picture inset in the top-right. It fades in and
+out rather than popping, and it takes a moment of genuine separation to trigger,
+so a jump near the threshold will not flicker the screen.
+
+Whenever a player is off the edge of a view — sideways *or* below ground — a
+chevron appears at that edge in their colour with the distance in blocks. While
+split, each player also emits a translucent column of light so you can spot each
+other across the terrain.
+
+### General (shared, either player)
 - **I**: Toggle inventory display
+- **M**: Toggle the minimap
+- **T**: Open the tech tree / workshop (**Tab** switches tabs, **Esc** closes)
 - **P**: Open/close material palette
 - **1–9**: Select material (when palette open)
 - **Left-click**: Place selected material
 - **Right-click**: Destroy placed tile (returns to inventory)
+- **Backspace**: Swap keyboard hemispheres
 - **B**: Toggle debug mode
-- **Shift + Arrow/WASD**: Manual camera scroll
+- **Shift + Arrow/WASD**: Manual camera scroll — only while debug mode is on, so a
+  stray Shift during play cannot freeze both players
+
+While the tech tree is open it swallows the movement keys, so reading it does not
+send either character wandering off.
 
 ## Getting Started
 
@@ -72,7 +119,10 @@ python3 -m http.server 8000
 ```
 minecraff/
 ├── index.html                       # Main HTML
-├── game.js                          # All game logic (~3300 lines)
+├── game.js                          # Core game logic, input, world rendering
+├── coop.js                          # Split camera, picture-in-picture, beacons
+├── minimap.js                       # Minimap strip
+├── techtree.js                      # Tech tree + workshop panel
 ├── style.css                        # Styling
 ├── sprite-editor.html               # Sprite editor UI
 ├── sprite-editor.js                 # Sprite editor logic
@@ -83,8 +133,15 @@ minecraff/
 ├── inventory.png / inventory2.png   # Inventory UI sprites
 ├── inventory-sprite-config.json     # Inventory frame mappings
 ├── trees-sprite-config.json         # Tree frame mappings
+├── docs/coop-contract.md            # How the four scripts fit together
 └── docs/superpowers/                # Design specs and implementation plans
 ```
+
+The four scripts load in order and share one global scope — there is no module
+system and no build step. `game.js` owns the state and defines
+`drawWorld(ctx, camX, camY, w, h)`, which the other modules re-run with a
+different camera to render the picture-in-picture. See `docs/coop-contract.md`
+for the full set of hooks.
 
 ## Biomes
 
