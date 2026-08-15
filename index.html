@@ -11,12 +11,13 @@
         <header>
             <h1>minecraff</h1>
             <div class="controls-info">
-                <p><strong>Steve:</strong> Arrow Keys to move, Space/Up to jump</p>
-                <p><strong>Alex:</strong> A/D to move, W to jump</p>
-                <p><strong>Action:</strong> Press 'E' near trees to chop them</p>
+                <p><strong>Left half of the keyboard:</strong> A/D to move, W to jump, S to duck/dig, <kbd>F</kbd> or <kbd>E</kbd> to act</p>
+                <p><strong>Right half of the keyboard:</strong> Arrow keys to move, Up to jump, Down to duck/dig, <kbd>/</kbd> or <kbd>.</kbd> to act</p>
+                <p><strong>Swap seats:</strong> press <kbd>Backspace</kbd> to flip which half drives Steve and which drives Alex. Alex starts on the left, Steve on the right; each HP bar shows its player's current side</p>
+                <p><strong>Act:</strong> your action key attacks a mob in range, otherwise chops a nearby tree, otherwise digs. Hold your down key with it to dig regardless; add left/right to tunnel sideways</p>
                 <p><strong>Placement:</strong> Press 'P' to open material palette, then press 1-9 to select, click to place, right-click to destroy</p>
-                <p><strong>Camera:</strong> Automatically follows Steve. Hold Shift + Arrow Keys/WASD for manual scrolling</p>
-                <p><strong>Debug:</strong> Press 'B' to toggle bounding box visualization</p>
+                <p><strong>Panels:</strong> 'I' inventory, 'M' minimap, 'T' tech tree / workshop</p>
+                <p><strong>Debug:</strong> Press 'B' for bounding boxes; with debug on, hold Shift + arrows/WASD to pan the camera</p>
             </div>
         </header>
         <div class="game-wrapper">
@@ -27,6 +28,9 @@
         </div>
     </div>
     <script src="game.js"></script>
+    <script src="coop.js"></script>
+    <script src="minimap.js"></script>
+    <script src="techtree.js"></script>
 </body>
 </html>
 

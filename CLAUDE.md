@@ -2,7 +2,23 @@
 
 ## Project
 
-Vanilla JS + HTML5 Canvas 2D side-scroller. All game logic lives in `game.js` (~3300 lines). No build step, no dependencies. Run with any static file server (`python3 -m http.server 8000`).
+Vanilla JS + HTML5 Canvas 2D side-scroller for **two players at one laptop**. No
+build step, no dependencies, no module system. Run with any static file server
+(`python3 -m http.server 8000`).
+
+Four scripts share one global scope, loaded in this order:
+
+| File | Owns |
+|---|---|
+| `game.js` | state, input, simulation, `drawWorld()` |
+| `coop.js` | `updateCoopCamera()`, `drawCoopOverlay()` — split camera, PIP, beacons |
+| `minimap.js` | `drawMinimap()` |
+| `techtree.js` | `drawTechPanel()`, `techPanelKey()`, `techPanelClick()`, `hasTech()` |
+
+`docs/coop-contract.md` is the integration contract and is authoritative — read
+it before touching any cross-file symbol. `gameLoop` calls every hook as
+`typeof fn === 'function' && fn(...)`, so a module failing to load degrades the
+game rather than killing it.
 
 ## Key Architecture
 
@@ -10,7 +26,55 @@ Vanilla JS + HTML5 Canvas 2D side-scroller. All game logic lives in `game.js` (~
 - **`Character` class**: Steve and Alex share one class. Physics, animation, collision all in `update()`.
 - **`Mob` class**: enemies and passive animals. `hostile`, `burnsAtDawn`, `burning`, `burnedOut` flags.
 - **`Tile` class**: placed materials. 32×32px, stored in world coordinates in `game.placedTiles`.
-- **`gameLoop(timestamp)`**: single RAF loop — delta time, day/night phase, sky rendering, entity updates, draw.
+- **`gameLoop(timestamp)`**: single RAF loop — simulate, then `updateCoopCamera`, then `drawWorld`, then overlays, then HUD.
+
+## Two-Player Parity
+
+Both characters are fully equal. There is no "the player".
+
+**`game.mining` and `game.digging` no longer exist.** Action state lives on each
+character as `char.mining` / `char.digging`. Anything that scans for "the current
+action" must take a character parameter — `startPlayerAction(char)`,
+`updatePlayerAction(char, now)`, `stopPlayerAction(char)`. Reintroducing a global
+here silently gives one player control of the other's pickaxe.
+
+**Gotcha — `mining.targetTreeIndex` is an index into `game.trees`, and both
+players hold one.** When one player fells a tree, `game.trees.splice()` shifts
+every later index. The other player's index must be decremented if it was
+greater, and their mining stopped if it was equal — otherwise they carry on
+chopping whatever tree slid into that slot, or chop a stale index off the end of
+the array.
+
+### Hemispheres are a property of the keyboard, not of the character
+
+`HEMISPHERES` is keyed by side (`left` = WASD+F, `right` = arrows+`/`) and never
+moves. `game.controlAssignment` (`{left: 1, right: 0}`) maps side → player index,
+and **Backspace** flips it via `swapControlHemispheres()`.
+
+**`char.controls` and `char.hemisphere` are getters, deliberately.** They re-derive
+from `game.controlAssignment` on every read, so a swap propagates everywhere at
+once. Caching either one into a field reintroduces the bug this design exists to
+prevent: stale bindings and world hints that name the wrong key. Anything that
+prints a key must go through `actionKeyLabel(char)`.
+
+`swapControlHemispheres()` clears `game.keys` and calls `stopPlayerAction()` +
+`stop()` on both characters before flipping. Without that, a key held across the
+swap latches movement on the player who just inherited it.
+
+## `drawWorld` is pure rendering
+
+`drawWorld(ctx, camX, camY, viewW, viewH, opts)` is called **twice per frame**
+when the players are split — once for the main view, once inside a clip region
+for the picture-in-picture inset.
+
+So it must never mutate state and must never read `game.camera`. Every `update()`
+call, every `splice()`, the day/night advance and the auto-save stay in
+`gameLoop`. Moving any of them into `drawWorld` double-steps the simulation on
+every frame the inset is visible — mobs move twice as fast, particles die early,
+and it only reproduces when the players are far apart. Viewport culling reads
+`camX/camY/viewW/viewH`, never `canvas.width/height`.
+
+`opts.hud === false` suppresses world-space hints and debug boxes for the inset.
 
 ## Coordinate System
 
