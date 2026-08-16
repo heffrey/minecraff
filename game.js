@@ -70,6 +70,59 @@ function playerCenter(char) {
     return { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
 }
 
+// ---------------------------------------------------------------------------
+// World -> player queries.
+//
+// Everything hostile used to read game.characters[0], which meant every mob in
+// the game chased, hit and exploded on Steve and treated Alex as furniture.
+// Anything that asks "where is the player?" goes through these instead.
+//
+// Distances here are measured from the sprite-box centre (x + width/2), not
+// from playerCenter()'s tighter getWorldBounds() hitbox, because that is the
+// geometry the mob attack ranges were tuned against.
+// ---------------------------------------------------------------------------
+
+// How much closer the other player has to be before a mob switches target.
+// Used by Mob.acquireTarget(), which explains the trade-off.
+const MOB_RETARGET_MIN_GAP = 40;    // pixels
+const MOB_RETARGET_FRACTION = 0.2;  // of the current target's distance
+
+// Distance from a world point to a character's centre.
+function distanceToCharacter(char, x, y) {
+    const dx = char.x + char.width / 2 - x;
+    const dy = char.y + char.height / 2 - y;
+    return Math.sqrt(dx * dx + dy * dy);
+}
+
+// Closest character to a world point, or null if there is nobody (within
+// maxDist, if given). Callers must handle null: the roster can legitimately be
+// empty, and a mob with nobody to chase should simply not attack.
+function nearestCharacterTo(x, y, maxDist = Infinity) {
+    let nearest = null;
+    let nearestDist = maxDist;
+
+    for (const char of game.characters) {
+        if (!char) continue;
+        const dist = distanceToCharacter(char, x, y);
+        if (dist < nearestDist) {
+            nearestDist = dist;
+            nearest = char;
+        }
+    }
+
+    return nearest;
+}
+
+// Run fn for every character inside a radius. Area effects use this rather than
+// nearestCharacterTo: a creeper going off between both players should hurt both.
+function eachCharacterInRadius(x, y, radius, fn) {
+    for (const char of game.characters) {
+        if (!char) continue;
+        const dist = distanceToCharacter(char, x, y);
+        if (dist < radius) fn(char, dist);
+    }
+}
+
 // The label to print in a world hint for this player's action key -- read from
 // the character's CURRENT hemisphere, so the prompts follow a swap.
 function actionKeyLabel(char) {
@@ -393,6 +446,7 @@ class Character {
         // Health
         this.maxHp = 20;
         this.hp = this.maxHp;
+        this.deaths = 0; // bumped by die(); mobs use it to spot a respawn
         this.lastDamageTaken = 0;
         this.regenRate = 0.5; // HP per second when not in combat
         this.regenDelay = 3000; // ms before regen starts after taking damage
@@ -1200,12 +1254,18 @@ class Character {
     }
 
     die() {
-        // Respawn at start position
-        this.x = 100;
+        // Respawn at start position, offset per player so two players who die
+        // together do not land inside each other.
+        this.x = 100 + (this.playerIndex || 0) * 80;
         this.y = 483;
         this.hp = this.maxHp;
         this.velocityY = 0;
         this.velocityX = 0;
+
+        // Bumped on every death so a mob can tell "my target respawned" from
+        // "my target moved" -- Mob.acquireTarget() drops a target that died
+        // rather than chasing its reference back to spawn.
+        this.deaths = (this.deaths || 0) + 1;
     }
 
     attack() {
@@ -1776,6 +1836,57 @@ class Mob {
         this.deathStartTime = 0;
         this.rotation = 0;
         this.opacity = 1;
+
+        // Who this mob is currently coming for. See acquireTarget().
+        this.target = null;
+        this.targetDeaths = 0;
+    }
+
+    // Remember a character as this mob's target, along with that character's
+    // death count at the moment of acquisition (see acquireTarget).
+    setTarget(char) {
+        this.target = char || null;
+        this.targetDeaths = char ? (char.deaths || 0) : 0;
+    }
+
+    // Decide who this mob chases and hits. Called every frame, so it must not
+    // flip-flop: two players standing shoulder to shoulder would otherwise make
+    // the mob vibrate between them, which looks broken and is no fun to play
+    // against. Hysteresis: the character already targeted keeps the target
+    // unless the other one is clearly closer -- by 40px, or by 20% of the
+    // current distance, whichever margin is LARGER. That means 40px of slack in
+    // a shoving match at melee range, and a proportionally wider margin further
+    // out, where a mob has no business changing its mind over a few pixels.
+    // Returns null when there is nobody to chase (empty roster).
+    acquireTarget() {
+        const cx = this.x + this.width / 2;
+        const cy = this.y + this.height / 2;
+
+        let current = this.target;
+
+        // Drop a stale target. Character.die() does not remove the character --
+        // it teleports it back to spawn with full HP -- so the reference stays
+        // valid but now points across the map. Re-evaluate from scratch instead
+        // of sprinting after someone who just died.
+        if (current && (!game.characters.includes(current) || (current.deaths || 0) !== this.targetDeaths)) {
+            current = null;
+        }
+
+        const nearest = nearestCharacterTo(cx, cy);
+
+        if (!current) {
+            this.setTarget(nearest);
+            return this.target;
+        }
+        if (!nearest || nearest === current) return current;
+
+        const currentDist = distanceToCharacter(current, cx, cy);
+        const nearestDist = distanceToCharacter(nearest, cx, cy);
+        const margin = Math.max(MOB_RETARGET_MIN_GAP, currentDist * MOB_RETARGET_FRACTION);
+
+        if (currentDist - nearestDist > margin) this.setTarget(nearest);
+
+        return this.target;
     }
 
     updateFrameIndex() {
@@ -1922,8 +2033,13 @@ class Mob {
         }
 
         // Attack behavior for hostile mobs (except spiders - they have special jump attack)
-        if (this.hostile && !this.passive && this.mobType !== 'spider' && game.characters.length > 0) {
-            const char = game.characters[0];
+        // Goes for whichever player is nearest, not a fixed index; null means
+        // there is nobody in the world to chase.
+        const chaseTarget = (this.hostile && !this.passive && this.mobType !== 'spider')
+            ? this.acquireTarget()
+            : null;
+        if (chaseTarget) {
+            const char = chaseTarget;
             const dx = char.x + char.width / 2 - (this.x + this.width / 2);
             const dy = char.y + char.height / 2 - (this.y + this.height / 2);
             const distToPlayer = Math.sqrt(dx * dx + dy * dy);
@@ -1950,10 +2066,12 @@ class Mob {
         }
 
         // Pig passive aggression: attack when angry
-        if (this.mobType === 'pig' && this.isAngry) {
-            // Angry pig attacks
-            this.passive = false;
-            const char = game.characters[0];
+        const angryPig = this.mobType === 'pig' && this.isAngry;
+        if (angryPig) this.passive = false; // stays angry even with nobody to charge
+        // An angry pig charges the nearest player -- normally whoever just hit it.
+        const angryPigTarget = angryPig ? this.acquireTarget() : null;
+        if (angryPigTarget) {
+            const char = angryPigTarget;
             const dx = char.x + char.width / 2 - (this.x + this.width / 2);
             const dy = char.y + char.height / 2 - (this.y + this.height / 2);
             const distToPlayer = Math.sqrt(dx * dx + dy * dy);
@@ -1969,20 +2087,21 @@ class Mob {
                 if (now - this.lastAttackTime > this.attackCooldown) {
                     this.lastAttackTime = now;
 
-                    // Jump at Steve - dramatic upward force
+                    // Jump at the target - dramatic upward force
                     this.velocityY = -4;
 
                     char.takeDamage(this.damage);
 
-                    // Create blood particles on Steve
+                    // Create blood particles on the target
                     createBloodParticles(char.x + char.width / 2, char.y + char.height / 2, 4);
                 }
             }
         }
 
-        // Spider attack: jump at Steve
-        if (this.mobType === 'spider' && this.hostile) {
-            const char = game.characters[0];
+        // Spider attack: jump at the nearest player
+        const spiderTarget = (this.mobType === 'spider' && this.hostile) ? this.acquireTarget() : null;
+        if (spiderTarget) {
+            const char = spiderTarget;
             const dx = char.x + char.width / 2 - (this.x + this.width / 2);
             const dy = char.y + char.height / 2 - (this.y + this.height / 2);
             const distToPlayer = Math.sqrt(dx * dx + dy * dy);
@@ -1998,12 +2117,12 @@ class Mob {
                 if (now - this.lastAttackTime > this.attackCooldown) {
                     this.lastAttackTime = now;
 
-                    // Jump at Steve
+                    // Jump at the target
                     this.velocityY = -8;
 
                     char.takeDamage(this.damage);
 
-                    // Create blood particles on Steve
+                    // Create blood particles on the target
                     createBloodParticles(char.x + char.width / 2, char.y + char.height / 2, 3);
                 }
             }
@@ -4324,17 +4443,12 @@ function createExplosion(x, y, radius = 100, damage = 5) {
         }
     }
 
-    // Damage player
-    const char = game.characters[0];
-    if (char && char.takeDamage) {
-        const dx = char.x + char.width / 2 - x;
-        const dy = char.y + char.height / 2 - y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-
-        if (dist < radius) {
-            char.takeDamage(Math.ceil(damage / 2));
-        }
-    }
+    // Damage EVERY player in the blast, the same way the loop above damages
+    // every mob in it. A creeper that detonates between both players hurts both;
+    // hitting only game.characters[0] made Alex immune to explosions.
+    eachCharacterInRadius(x, y, radius, (char) => {
+        if (char.takeDamage) char.takeDamage(Math.ceil(damage / 2));
+    });
 
     // Explosion particles
     for (let i = 0; i < 15; i++) {
