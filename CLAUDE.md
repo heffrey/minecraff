@@ -185,6 +185,90 @@ loop in `gameLoop` splice it out. So for 2.5 seconds a dead mob is still in
 `Mob.update()` returns early while `isDying`, so corpses already could not walk
 or attack; that part was fine.
 
+
+## Tech Tree Effects
+
+`techtree.js` owns the panel, the 17-node DAG and the spend; `game.js` owns every
+field an unlock changes. The seam is a helper block in `game.js` marked
+`// Tech tree effects`. Full reasoning, with the economy audit behind every
+number, is in `docs/superpowers/specs/2026-08-19-techtree-effects-design.md`.
+
+**Derive, don't store.** Effects are read at the call site (`digIntervalFor`,
+`digYield`, `woodPerTree`, `treeHitDamage`, `attackMissChance`, `lightRadius`,
+`craftYield`), so an unlock lands on the next frame for **both** characters with
+no re-application pass. The exception is the handful of fields the HUD and
+physics read directly — `maxHp`, `attackDamage`, `speed`, `jumpPower`,
+`regenRate`, `regenDelay`, and `MAX_DIG_DEPTH` — which `applyTechToCharacters()`
+writes. It is idempotent; call it freely.
+
+**Every read goes through `techOn(id)`**, which is
+`typeof hasTech === 'function' && hasTech(id)`. `techtree.js` is a separate
+`<script>` with no module system, so the game must stay playable if it fails to
+load.
+
+**Unlocks are shared; effects apply to every character.** One Set, bought from
+one inventory. `applyTechToCharacters()` loops `game.characters` — never
+`characters[0]`. Note `celebrate()` in `techtree.js` *does* only float text over
+`chars[0]`; do not copy that pattern for effects, both players paid.
+
+### The economy this was balanced against
+
+**A held sideways dig is an unlimited tap.** `updatePlayerAction` advances
+`char.digging.targetTileX` by ±32 per tick while the character never moves, and
+the abort test measures against `originTileX` (where they stand). One keypress
+tunnels forever at a fixed depth — and since each material sits in a fixed depth
+band, that is ~200 units/minute of *any* material. **Every material except wood
+and gold is effectively free and infinite.** Consequence for anyone tuning this:
+raising a cost buys nothing but a longer keypress. Pacing comes from **gates** —
+which biome, how deep, whether you can see — never from price.
+
+**Gold exists only as a rare drop.** No `GROUND_MATERIALS` row contains gold; it
+is a 12% roll in `digYield` at cave depth >= 8. Adding a 4th entry to the `cave`
+row instead would push silver into a one-block band and make gold infinite below
+it, inverting the rarity. Before this, `goldsmithing` and `gold_lamp` were
+literally unresearchable/uncraftable.
+
+**Depth beyond 2 yields nothing new.** `getGroundMaterial` clamps to
+`list.length - 1`, so depths 2–49 all give the same material. `deepshafts` raises
+the floor to 90, but the reward for going deep is gold and safety, not variety.
+
+### Gotchas
+
+- **`MAX_DIG_DEPTH` is a `let`, not a `const` or a function.** `deepshafts`
+  raises it 50 -> 90. It must stay a plain top-level `let`: `minimap.js` guards
+  with `typeof MAX_DIG_DEPTH === 'number'` and would silently fall back to its
+  own `DEFAULT_MAX_DIG_DEPTH = 50`, drawing a minimap that disagrees with the
+  world.
+- **The render loops must break once a layer is off-screen.** Both depth loops
+  in `drawGroundWithHoles` run per visible column; at 90 layers without the
+  `if (screenY > ctx.canvas.height) break;` early-out that is ~2250 `fillRect`
+  calls per loop per frame. With it, 90 layers costs the same as 50 did
+  (measured: 0.2 ms/frame). **Do not raise the depth limit without it.**
+- **Darkness composites on its own canvas.** `drawDarkness` fills a scratch
+  canvas and punches light holes with `destination-out`, then stamps it down
+  with one `drawImage`. Punching straight onto the main canvas erases *the
+  world* — you get a hole through the game to the web page behind it, not a lit
+  patch. This was a real bug; the scratch layer is the only surface the erase
+  may touch.
+- **Darkness draws last in `drawWorld`**, and the HUD, HP bars, inventory,
+  minimap and tech panel are all drawn by the caller *after* `drawWorld` returns,
+  so none of them dim. Alpha is also capped (0.85, or 0.75 with light tech) so
+  terrain silhouettes stay readable — the pre-tech game must never be a blackout.
+- **`Tile` stores `materialName`, not `materialType`.** The right-click refund
+  read `materialType` and so silently refunded nothing for as long as it existed.
+  Anything matching on a placed tile's material wants `materialName`.
+- **The dig tick no longer calls `saveGame()`.** It sets `game.saveDirty` and the
+  30 s autosave picks it up. The old code JSON-stringified the inventory, every
+  placed tile, every ground hole and every dug material 3.3 times a second while
+  digging.
+- **`earthworks` forced a reorder.** `biome` and `material` are now computed
+  *above* the interval test in `updatePlayerAction`, because the interval depends
+  on which material the next block is. That is what `digMaterialAhead()` is for.
+- **Teleporting must stop an in-progress dig.** `rail_kit` clears
+  `digging.isDigging` and nulls the target/origin rather than relying on the
+  abort check — which measures against `originTileX` and would otherwise fire
+  against a tile the digger no longer stands on.
+
 ## Biomes
 
 `getBiome(worldX)` returns string. `getBiomeColors(biome)` returns `{sky, nightSky, ground, grass}`. Cave at `x < -1000`, swamp at `3000–4000`, snow at `x > 4000`.

@@ -8,7 +8,7 @@ const loadingEl = document.getElementById('loading');
 // hole dug below it would be invisible while collision still walked into it.
 // The dig input scan, the ground fill, and the hole outlines must all agree, so
 // they all read this constant. Raising it means rendering more layers per frame.
-const MAX_DIG_DEPTH = 50;
+let MAX_DIG_DEPTH = 50;
 
 // Keys are stored normalised so bindings never have to list both cases.
 function normalizeKey(key) {
@@ -229,8 +229,21 @@ const game = {
         open: false,                     // panel visible
         tab: 'tech',                     // 'tech' | 'workshop'
         selected: null,                  // hovered/selected node or recipe id
-        crafted: {}                      // recipeId -> count
+        crafted: {},                     // recipeId -> charges on hand
+        pickTier: null,                  // 'stone' | 'iron' | null -- pick in use
+        toolBlocks: 0,                   // blocks left on the active pick
+        plating: 0                       // iron_ingot uses, capped at 3 (+5 maxHp each)
     },
+    // World torches placed from the workshop. World coords; each punches a
+    // permanent hole in the darkness pass.
+    torches: [],
+    // Clay Pot drops one; Rail Kit rides both players back to the newest.
+    waypoints: [],
+    // Timed buffs. Deliberately NOT persisted -- a deadline written before a
+    // reload is meaningless after it, and reloading should not hand out a free
+    // 45 s of speed. Same reasoning that already keeps dayNight out of the save.
+    buffs: { speedUntil: 0, revealUntil: 0 },
+    saveDirty: false,           // dig tick sets this; the 30 s autosave clears it
     dayNight: {
         phase: 'DAY',          // 'DAY' | 'EVENING' | 'NIGHT' | 'DAWN'
         elapsed: 0,            // ms elapsed in current cycle
@@ -1322,8 +1335,8 @@ class Character {
 
         // Attack only the nearest target
         if (nearestTarget) {
-            // 25% chance to miss
-            const missChance = 0.25;
+            // 25% chance to miss, 18% once `stonework` is researched
+            const missChance = attackMissChance();
             if (Math.random() < missChance) {
                 // Miss! Show floating text above Steve
                 const missText = new FloatingText(this.x + this.width / 2, this.y - 10, 'MISS!');
@@ -2603,7 +2616,7 @@ class Tree {
     
     // Hit the tree (returns true if tree is destroyed)
     hit() {
-        this.health--;
+        this.health -= treeHitDamage();
         return this.health <= 0;
     }
 }
@@ -3120,6 +3133,11 @@ async function initGame() {
         
         // Load saved game state
         loadGame();
+
+        // Push tech effects onto the characters. loadGame() calls this too, but
+        // it returns early when there is no save, and a fresh game still needs
+        // the baseline written.
+        applyTechToCharacters();
         
         // Auto-save when inventory or tiles change
         const originalInventoryWood = game.inventory.wood;
@@ -3357,7 +3375,7 @@ function updatePlayerAction(char, now) {
             const targetTree = game.trees[targetTreeIndex];
 
             if (char.isNearTree(targetTree)) {
-                if (now - char.mining.lastHitTime >= char.mining.hitInterval) {
+                if (now - char.mining.lastHitTime >= miningIntervalFor(char)) {
                     const charWorldBounds = char.getWorldBounds();
                     const treeWorldBounds = targetTree.getWorldBounds();
 
@@ -3399,7 +3417,7 @@ function updatePlayerAction(char, now) {
                             }
                         }
 
-                        game.inventory.wood += 1;
+                        game.inventory.wood += woodPerTree();
                         console.log(`Chopped down tree! Wood: ${game.inventory.wood}`);
 
                         // Schedule tree regrowth (random delay between 10-30 seconds)
@@ -3473,11 +3491,15 @@ function updatePlayerAction(char, now) {
             // Abort digging - walked away, or a mob came into range
             char.digging.isDigging = false;
             if (char.state === 'mine') char.state = 'idle';
-        } else if (now - char.digging.lastHitTime >= char.digging.hitInterval) {
+        } else if (now - char.digging.lastHitTime >= digIntervalFor(char, digMaterialAhead(targetTileX, targetDepth))) {
             const biome = getBiome(targetTileX + TILE / 2);
             const material = getGroundMaterial(biome, targetDepth);
 
-            game.inventory[material] = (game.inventory[material] || 0) + 1;
+            const yielded = digYield(material, targetDepth, biome);
+            for (const mat in yielded) {
+                game.inventory[mat] = (game.inventory[mat] || 0) + yielded[mat];
+            }
+            consumePickBlock();
 
             digGroundHole(targetTileX, targetDepth, material);
 
@@ -3498,8 +3520,10 @@ function updatePlayerAction(char, now) {
 
             char.digging.lastHitTime = now;
 
-            // Save progress
-            saveGame();
+            // Mark dirty rather than serialising the whole world 3.3x a second;
+            // AUTO_SAVE_INTERVAL picks it up. Digging is the hottest write path
+            // in the game and `deepshafts` only makes the payload bigger.
+            game.saveDirty = true;
         }
     } else if (!actionHeld && char.digging.isDigging) {
         // Action key released, stop digging
@@ -3561,6 +3585,11 @@ document.addEventListener('keydown', (e) => {
             if (!char || !char.controls) continue;
             if (char.controls.action.includes(key)) startPlayerAction(char);
         }
+    }
+
+    // Use one charge of the selected workshop item (C)
+    if (key === 'c' && !e.repeat) {
+        if (typeof useSelectedCraft === 'function') useSelectedCraft();
     }
 
     // Toggle debug mode (show bounding boxes) - Press 'B'
@@ -3957,6 +3986,369 @@ function getGroundMaterial(biome, depth) {
     return list[Math.min(depth, list.length - 1)];
 }
 
+// =====================================================================
+// Tech tree effects
+// =====================================================================
+//
+// techtree.js owns the panel, the node table and the spend; game.js owns
+// every field those unlocks actually change (contract §5). These helpers are
+// the seam between them.
+//
+// Two rules hold everywhere below:
+//
+//   1. **Derive, don't store.** Effects are read at the call site, so an
+//      unlock lands on the very next frame for BOTH characters without a
+//      re-application pass. The exceptions are the handful of fields the HUD
+//      and physics read directly (maxHp, speed, jumpPower, ...), which
+//      applyTechToCharacters() writes -- see there for why.
+//   2. **Never assume techtree.js loaded.** It is a separate <script> with no
+//      module system, so every read goes through techOn(), which answers
+//      `false` rather than throwing if the file is missing. The game stays
+//      playable with the tech tree deleted.
+function techOn(id) {
+    return typeof hasTech === 'function' && hasTech(id);
+}
+
+// Materials that yield to a shovel rather than a pick. `earthworks` speeds up
+// exactly these; stone/iron/silver/gold are unaffected until `toolsmithing`.
+const SOFT_MATERIALS = { dirt: true, sand: true, snow: true, clay: true };
+
+function treeHitDamage() {
+    return techOn('woodcraft') ? 2 : 1;   // 3 hp tree: 3 hits -> 2
+}
+
+function woodPerTree() {
+    return techOn('woodcraft') ? 2 : 1;
+}
+
+// ms between digs. Returns a value -- it must never write
+// char.digging.hitInterval, which stays the documented per-character base
+// (contract §1) and is what a future per-player upgrade would set.
+function digIntervalFor(char, material) {
+    let ms = char.digging.hitInterval;
+    if (techOn('earthworks') && SOFT_MATERIALS[material]) ms *= 0.67;
+    if (techOn('toolsmithing')) ms *= 0.73;
+    ms *= pickMultiplier();
+    return ms;
+}
+
+function miningIntervalFor(char) {
+    let ms = char.mining.hitInterval;
+    if (techOn('toolsmithing')) ms *= 0.70;
+    return ms;
+}
+
+// What one dug block puts in the shared inventory. Returns a {material: count}
+// map because several nodes add a SECOND material on top of the normal one
+// (kiln's spoil clay, goldsmithing's deep-cave gold), rather than replacing it.
+function digYield(material, depth, biome) {
+    const out = {};
+    let n = 1;
+    if (techOn('foraging') && depth === 0) n = 2;
+    if (techOn('smelting') && (material === 'iron' || material === 'silver')) n = 3;
+    if (techOn('pottery') && material === 'clay') n += 1;
+    out[material] = n;
+
+    // Kiln: 20% of any block, any biome, any depth, also gives clay. This is
+    // what removes the swamp round-trip from tier 3 -- you pay the trip once
+    // for kiln itself and never again.
+    if (techOn('kiln') && Math.random() < 0.20) {
+        out.clay = (out.clay || 0) + 1;
+    }
+
+    // Gold exists ONLY here. Deliberately not a GROUND_MATERIALS row: appending
+    // a 4th entry to `cave` would push silver into a one-block-per-column band
+    // and make gold infinite below it -- exactly inverting the rarity a tier-4
+    // luxury wants. As a rare drop it stays the one scarce dug material.
+    // NOTE: biome is compared by name, never by a sign test on X. The cave is
+    // entirely at negative world X (CLAUDE.md documents the >= 0 guard bug).
+    if (techOn('goldsmithing') && biome === 'cave' && depth >= 8 && Math.random() < 0.12) {
+        out.gold = (out.gold || 0) + 1;
+    }
+    return out;
+}
+
+function craftYield() {
+    return techOn('pottery') ? 2 : 1;
+}
+
+// True if a placed gold tile wards this world X. Distance is compared with
+// Math.abs, never a sign test -- world X is routinely negative.
+const GOLD_WARD_RANGE = 640;
+function goldWardCovers(worldX) {
+    if (!techOn('goldsmithing')) return false;
+    for (const tile of game.placedTiles) {
+        if (tile.materialName !== 'gold') continue;
+        if (Math.abs(tile.x - worldX) <= GOLD_WARD_RANGE) return true;
+    }
+    return false;
+}
+
+// The material the next dig tick will produce. Needed by the interval test,
+// which now runs before the block is removed because `earthworks` only speeds
+// up soft ground.
+function digMaterialAhead(targetTileX, targetDepth) {
+    const TILE = 32;
+    return getGroundMaterial(getBiome(targetTileX + TILE / 2), targetDepth);
+}
+
+// ---------------------------------------------------------------------
+// Pick durability (workshop)
+// ---------------------------------------------------------------------
+//
+// One shared counter. At zero the next charge of the best pick on hand
+// auto-engages (iron beats stone; they never stack). Picks are the repeatable
+// sink that keeps the 200-materials/minute faucet meaningful after all 17
+// nodes are researched.
+const PICK_BLOCKS = 100;
+const PICK_SPEED = { stone: 0.8, iron: 0.6 };
+
+function pickMultiplier() {
+    const t = game.tech;
+    if (!t || !t.pickTier || t.toolBlocks <= 0) return 1;
+    return PICK_SPEED[t.pickTier] || 1;
+}
+
+// Called once per dug block. Burns a block off the active pick and swaps in a
+// fresh charge when it runs out.
+function consumePickBlock() {
+    const t = game.tech;
+    if (!t) return;
+    if (t.pickTier && t.toolBlocks > 0) {
+        t.toolBlocks--;
+        if (t.toolBlocks > 0) return;
+        t.pickTier = null;
+    }
+    engageBestPick();
+}
+
+function engageBestPick() {
+    const t = game.tech;
+    if (!t || t.toolBlocks > 0) return;
+    const crafted = t.crafted || {};
+    const tier = crafted.iron_pick > 0 ? 'iron' : (crafted.stone_pick > 0 ? 'stone' : null);
+    if (!tier) { t.pickTier = null; return; }
+    crafted[tier === 'iron' ? 'iron_pick' : 'stone_pick']--;
+    t.pickTier = tier;
+    t.toolBlocks = PICK_BLOCKS;
+}
+
+// ---------------------------------------------------------------------
+// Stored effects
+// ---------------------------------------------------------------------
+//
+// The fields below are read directly by the HP bar and the physics step, so
+// unlike everything above they are WRITTEN, not derived. Recomputed from the
+// unlock set every time, so this is idempotent and safe to call repeatedly.
+//
+// Loops game.characters -- never characters[0]. Unlocks are shared and bought
+// from one shared inventory, so both players get every effect.
+function applyTechToCharacters() {
+    if (typeof game === 'undefined' || !game || !game.characters) return;
+
+    // deepshafts also raises the dig floor. MAX_DIG_DEPTH is a `let` (not a
+    // function) because minimap.js guards with `typeof MAX_DIG_DEPTH ===
+    // 'number'` and would otherwise silently fall back to its own default of
+    // 50, drawing a minimap that disagrees with the world.
+    MAX_DIG_DEPTH = techOn('deepshafts') ? 90 : 50;
+
+    game.characters.forEach(char => {
+        let maxHp = 20;
+        if (techOn('ironworking')) maxHp = 30;
+        if (techOn('frostgear')) maxHp = 40;
+        maxHp += platingBonus();
+
+        let damage = 5;
+        if (techOn('stonework')) damage = 8;
+        if (techOn('ironworking')) damage = 12;
+
+        let regenRate = 0.5, regenDelay = 3000;
+        if (techOn('ironworking')) regenRate = 1.0;
+        if (techOn('frostgear')) { regenRate = 2.0; regenDelay = 1200; }
+
+        char.maxHp = maxHp;
+        char.attackDamage = damage;
+        char.regenRate = regenRate;
+        char.regenDelay = regenDelay;
+        char.speed = techOn('minecarts') ? 2.8 : 2;
+        if (game.buffs && Date.now() < game.buffs.speedUntil) char.speed *= 1.4;
+        char.jumpPower = techOn('deepshafts') ? -10 : -8;
+
+        // Raising maxHp must never leave hp above it, and lowering it (a fresh
+        // save, no tech) must clamp rather than strand the bar off the end.
+        if (char.hp > char.maxHp) char.hp = char.maxHp;
+    });
+}
+
+function platingBonus() {
+    const t = game.tech;
+    return t && t.plating ? Math.min(t.plating, 3) * 5 : 0;
+}
+
+// Chance to miss an attack. stonework steadies the swing.
+function attackMissChance() {
+    return techOn('stonework') ? 0.18 : 0.25;
+}
+
+// The one hook techtree.js calls into game.js (contract §5). Everything the
+// panel unlocks that needs a stored field lands here.
+function onTechUnlocked(id) {
+    applyTechToCharacters();
+}
+
+// ---------------------------------------------------------------------
+// Crafted items
+// ---------------------------------------------------------------------
+//
+// techtree.js owns the charge count and the panel messaging; this owns every
+// field an effect touches. Called with the recipe id when the player presses C.
+//
+// Return a STRING to refuse -- techtree.js shows it and keeps the charge.
+// Return anything else (undefined) and the charge is spent.
+//
+// Consumables affect BOTH characters. It is a shared stash bought out of a
+// shared inventory; a "which player drank it" concept would need a target
+// picker the panel has no room for.
+
+const SPEED_BUFF_MS = 45000;
+const REVEAL_BUFF_MS = 60000;
+
+// Drop a tile straight into the world. Returns false if the materials sheet is
+// missing (the game runs without it, so never assume).
+function placeCraftedTile(worldX, worldY, materialName) {
+    const sheet = game.spriteSheets['materials'];
+    if (!sheet) return false;
+    const frame = MATERIAL_FRAMES[materialName];
+    if (frame === undefined) return false;
+    const TILE = 32;
+    const gx = Math.floor(worldX / TILE) * TILE;
+    const gy = Math.floor(worldY / TILE) * TILE;
+    // Don't stack two tiles in one cell -- it wastes the charge and leaves a
+    // z-fighting mess.
+    if (game.placedTiles.some(t => t.x === gx && t.y === gy)) return false;
+    game.placedTiles.push(new Tile(sheet, gx, gy, frame, materialName));
+    return true;
+}
+
+// The player whose action last opened the panel is not tracked, so effects that
+// need a position use character 0 -- but every STAT effect below loops all of
+// game.characters. Both players paid for it.
+function craftAnchor() {
+    return (game.characters && game.characters[0]) || null;
+}
+
+function applyCraftedEffect(id) {
+    const who = craftAnchor();
+    if (!who) return 'No one to use it';
+    const TILE = 32;
+    const cx = who.x + who.width / 2;
+    const feetY = who.y + who.height;
+    const dir = who.facing === 'left' ? -1 : 1;
+    const now = Date.now();
+
+    switch (id) {
+        // --- Placeables ---------------------------------------------------
+        case 'plank_bundle': {
+            // A column UNDER the feet: step up it to climb out of your own shaft.
+            let placed = 0;
+            for (let i = 0; i < 3; i++) {
+                if (placeCraftedTile(cx, feetY + i * TILE, 'wood')) placed++;
+            }
+            if (!placed) return 'No room for a scaffold here';
+            break;
+        }
+        case 'cut_stone': {
+            let placed = 0;
+            for (let i = 0; i < 3; i++) {
+                if (placeCraftedTile(cx + dir * TILE, feetY - TILE - i * TILE, 'stone')) placed++;
+            }
+            if (!placed) return 'No room for a wall here';
+            break;
+        }
+        case 'dirt_ramp': {
+            // Rising staircase ahead: each step one tile further out and one up.
+            let placed = 0;
+            for (let i = 0; i < 3; i++) {
+                if (placeCraftedTile(cx + dir * TILE * (i + 1), feetY - i * TILE, 'dirt')) placed++;
+            }
+            if (!placed) return 'No room for a ramp here';
+            break;
+        }
+        case 'torch_bundle':
+            game.torches.push({ x: cx, y: feetY - 16 });
+            break;
+        case 'gold_lamp':
+            if (!placeCraftedTile(cx, feetY - TILE, 'gold')) return 'No room for a ward here';
+            break;
+
+        // --- Consumables --------------------------------------------------
+        case 'berry_basket': {
+            let healed = false;
+            game.characters.forEach(char => {
+                if (!char || char.hp >= char.maxHp) return;
+                char.hp = Math.min(char.maxHp, char.hp + 8);
+                healed = true;
+            });
+            if (!healed) return 'Everyone is already at full health';
+            break;
+        }
+        case 'snow_boots':
+            game.buffs.speedUntil = now + SPEED_BUFF_MS;
+            applyTechToCharacters();
+            break;
+        case 'silver_mirror':
+            game.buffs.revealUntil = now + REVEAL_BUFF_MS;
+            break;
+
+        // --- Permanent ----------------------------------------------------
+        case 'iron_ingot':
+            if (game.tech.plating >= 3) return 'Plating is already at its limit';
+            game.tech.plating++;
+            applyTechToCharacters();
+            break;
+
+        // --- Travel -------------------------------------------------------
+        case 'clay_pot':
+            game.waypoints.push({ x: cx, y: who.y });
+            break;
+        case 'rail_kit': {
+            const wp = game.waypoints[game.waypoints.length - 1];
+            if (!wp) return 'No waypoint set — use a Clay Pot first';
+            game.characters.forEach(char => {
+                if (!char) return;
+                char.x = wp.x;
+                char.y = wp.y;
+                char.velocityY = 0;
+                // Teleporting mid-dig would leave the dig running against a tile
+                // the digger is no longer standing on. Stop it here rather than
+                // relying on the abort check, which measures against originTileX.
+                char.digging.isDigging = false;
+                char.digging.targetTileX = null;
+                char.digging.originTileX = null;
+                char.mining.isMining = false;
+                if (char.state === 'mine') char.state = 'idle';
+            });
+            break;
+        }
+        default:
+            return 'That does nothing yet';
+    }
+
+    game.saveDirty = true;
+    return true;
+}
+
+// Timed buffs expire on their own; re-apply the stat block on the frame they
+// flip so speed goes back down exactly once rather than every frame.
+let buffsWereActive = false;
+function updateTimedBuffs() {
+    const active = Date.now() < game.buffs.speedUntil;
+    if (active === buffsWereActive) return;
+    buffsWereActive = active;
+    applyTechToCharacters();
+}
+
+
 function spawnDigParticles(x, y, materialName, count = 6) {
     for (let i = 0; i < count; i++) {
         game.particles.push(new DirtParticle(x, y, materialName));
@@ -4026,6 +4418,7 @@ function drawGroundWithHoles(ctx, biomeColors, screenGroundY, skyColor, camX, vi
         // Draw ground layers down to the deepest diggable layer
         for (let depth = 0; depth < MAX_DIG_DEPTH; depth++) {
             const screenY = screenGroundY + (depth * TILE);
+            if (screenY > ctx.canvas.height) break;   // rest is off-screen
             const layerHeight = TILE;
 
             // Check if this position is dug out
@@ -4090,6 +4483,7 @@ function drawGroundWithHoles(ctx, biomeColors, screenGroundY, skyColor, camX, vi
         const screenX = worldX - camX;
         for (let depth = 0; depth < MAX_DIG_DEPTH; depth++) {
             const screenY = screenGroundY + (depth * TILE);
+            if (screenY > ctx.canvas.height) break;   // rest is off-screen
             ctx.beginPath();
             ctx.moveTo(screenX, screenY);
             ctx.lineTo(screenX + TILE, screenY);
@@ -4197,9 +4591,14 @@ function saveGame() {
             camera: game.camera,
             tech: [...game.tech.unlocked], // Convert Set to Array
             crafted: game.tech.crafted,
+            pickTier: game.tech.pickTier,
+            toolBlocks: game.tech.toolBlocks,
+            plating: game.tech.plating,
+            torches: game.torches,
+            waypoints: game.waypoints,
             controlAssignment: game.controlAssignment,
             players: game.characters.map(char => ({ x: char.x, y: char.y, hp: char.hp })),
-            version: 2 // For future compatibility
+            version: 3 // v2 saves still load; every v3 key is guarded on read
         };
         localStorage.setItem('minecraff_save', JSON.stringify(gameState));
         console.log('Game saved!');
@@ -4262,6 +4661,20 @@ function loadGame() {
         if (gameState.crafted && typeof gameState.crafted === 'object') {
             game.tech.crafted = { ...gameState.crafted };
         }
+
+        // Workshop state. Each guarded on its own: a v2 save predates all of
+        // it and must still load.
+        if (typeof gameState.toolBlocks === 'number') game.tech.toolBlocks = gameState.toolBlocks;
+        if (typeof gameState.pickTier === 'string') game.tech.pickTier = gameState.pickTier;
+        if (typeof gameState.plating === 'number') game.tech.plating = Math.min(3, Math.max(0, gameState.plating));
+        if (Array.isArray(gameState.torches)) game.torches = gameState.torches.filter(
+            t => t && typeof t.x === 'number' && typeof t.y === 'number');
+        if (Array.isArray(gameState.waypoints)) game.waypoints = gameState.waypoints.filter(
+            w => w && typeof w.x === 'number' && typeof w.y === 'number');
+
+        // Must run before the players block: it sets maxHp, which the hp clamp
+        // below measures against.
+        applyTechToCharacters();
 
         // Restore who sits on which half of the keyboard. Only accept a pair
         // that actually assigns each side to a different player -- a malformed
@@ -4330,6 +4743,11 @@ function spawnHostileMob(mobType, options = {}) {
         ? options.spawnX
         : game.camera.x + (side < 0 ? -80 : canvas.width + 80);
     const facing = side < 0 ? 'right' : 'left';
+
+    // Gold ward: a placed gold tile keeps the night off its patch. This is the
+    // only effect in the tree that gives block PLACEMENT a point beyond
+    // decoration -- until now placing was a loan, since right-click refunds it.
+    if (goldWardCovers(spawnX)) return;
 
     const mob = new Mob(game.spriteSheets.mobs, spawnX, 0, mobType, facing);
     mob.hostile = true;
@@ -4492,6 +4910,137 @@ function drawWorldHint(ctx, text, x, y, color) {
 // opts.hud === false suppresses world-space hints and debug boxes so the inset
 // stays readable.
 // ---------------------------------------------------------------------------
+
+// =====================================================================
+// Darkness
+// =====================================================================
+//
+// Before this, night changed the sky colour and spawned mobs and that was all
+// -- you could stand 1600 px underground and see perfectly, which is exactly
+// why cave iron was free. Darkness is what gives `torches` and `lanterns`
+// something to solve and the cave a downside.
+//
+// Two hard rules keep the pre-tech game playable:
+//   1. Alpha never reaches 1.0 (DARK_CAP). Terrain silhouettes stay readable
+//      at every point in the game, with or without light tech.
+//   2. This draws at the END of drawWorld, so the HUD, HP bars, inventory,
+//      minimap and tech panel -- all drawn after drawWorld -- are never dimmed.
+//      A player lost in the dark can always open the panel and read it.
+
+const DARK_CAP_BASE = 0.85;
+const DARK_CAP_LIT = 0.75;   // torches/lanterns also lift the ceiling
+
+// How dark the sky itself is, 0 by day. Reuses the same cyclePos bands as the
+// sky renderer so darkness and sky colour never disagree.
+function nightDarkness() {
+    const dn = game.dayNight;
+    if (!dn || !dn.cycleDuration) return 0;
+    const p = (dn.elapsed / dn.cycleDuration) % 1;
+    const PEAK = 0.72;
+    if (p < 0.40) return 0;                              // DAY
+    if (p < 0.55) return PEAK * ((p - 0.40) / 0.15);     // EVENING, ramping in
+    if (p < 0.75) return PEAK;                           // NIGHT
+    return PEAK * (1 - (p - 0.75) / 0.25);               // DAWN, ramping out
+}
+
+// How dark it is from being underground. Full dark about 12 tiles down.
+function depthDarkness(camY, viewH) {
+    const worldGroundY = canvas.height - 50;
+    const below = (camY + viewH * 0.6) - worldGroundY;
+    return Math.max(0, Math.min(0.85, below / (12 * 32)));
+}
+
+// Light carried by each character. `lanterns` also removes the depth falloff,
+// which is the whole point of "glass and metal beat a stick that burns out".
+function lightRadius(camY, viewH) {
+    if (techOn('lanterns')) return 300;
+    const base = techOn('torches') ? 190 : 90;
+    // Without lanterns the carried light gutters the deeper you go, down to 70%.
+    const falloff = 1 - 0.3 * depthDarkness(camY, viewH) / 0.85;
+    return base * falloff;
+}
+
+function darkCap() {
+    return (techOn('torches') || techOn('lanterns')) ? DARK_CAP_LIT : DARK_CAP_BASE;
+}
+
+// Punch a soft-edged hole in the darkness layer. Called under
+// globalCompositeOperation = 'destination-out', where alpha erases.
+function punchLight(ctx, sx, sy, radius) {
+    if (radius <= 0) return;
+    const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, radius);
+    g.addColorStop(0, 'rgba(0, 0, 0, 1)');
+    g.addColorStop(0.55, 'rgba(0, 0, 0, 0.75)');
+    g.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(sx, sy, radius, 0, Math.PI * 2);
+    ctx.fill();
+}
+
+// The darkness is composited on its OWN canvas, then stamped down in one
+// drawImage. Punching the light holes straight onto the main canvas would work
+// -- for exactly one frame -- because 'destination-out' erases whatever is
+// already there, which is the world: you get a hole through the game to the web
+// page behind it, not a lit patch. The scratch layer is the only surface the
+// erase is allowed to touch.
+let _darkLayer = null;
+function darkLayerFor(w, h) {
+    if (!_darkLayer) _darkLayer = document.createElement('canvas');
+    if (_darkLayer.width !== w || _darkLayer.height !== h) {
+        _darkLayer.width = w;
+        _darkLayer.height = h;
+    }
+    return _darkLayer;
+}
+
+function drawDarkness(ctx, camX, camY, viewW, viewH) {
+    const alpha = Math.min(
+        Math.max(nightDarkness(), depthDarkness(camY, viewH)),
+        darkCap()
+    );
+    if (alpha <= 0.01) return;
+
+    const w = Math.max(1, Math.ceil(viewW));
+    const h = Math.max(1, Math.ceil(viewH));
+    const layer = darkLayerFor(w, h);
+    const lc = layer.getContext('2d');
+
+    lc.clearRect(0, 0, w, h);
+    lc.globalCompositeOperation = 'source-over';
+    lc.fillStyle = `rgba(0, 0, 10, ${alpha})`;
+    lc.fillRect(0, 0, w, h);
+
+    // Erase light holes out of the layer -- and only the layer.
+    lc.globalCompositeOperation = 'destination-out';
+
+    const radius = lightRadius(camY, viewH);
+    game.characters.forEach(char => {
+        if (!char) return;
+        punchLight(lc,
+            char.x + char.width / 2 - camX,
+            char.y + char.height / 2 - camY,
+            radius);
+    });
+
+    // World torches from the workshop: permanent light, no depth falloff.
+    for (const t of game.torches) {
+        punchLight(lc, t.x - camX, t.y - camY, 160);
+    }
+
+    // Placed gold tiles glow, marking the ward that keeps the night off.
+    for (const tile of game.placedTiles) {
+        if (tile.materialName !== 'gold') continue;
+        punchLight(lc, tile.x + 16 - camX, tile.y + 16 - camY, 160);
+    }
+
+    lc.globalCompositeOperation = 'source-over';
+
+    // Stamp the finished layer over the world. Drawn at the context origin so a
+    // translated context (the picture-in-picture inset) lands it correctly.
+    ctx.drawImage(layer, 0, 0);
+}
+
 function drawWorld(ctx, camX, camY, viewW, viewH, opts = {}) {
     const hud = opts.hud !== false;
     const TILE = 32;
@@ -4701,6 +5250,11 @@ function drawWorld(ctx, camX, camY, viewW, viewH, opts = {}) {
             ctx.fillRect(bounds.x + bounds.width - cornerSize / 2, bounds.y + bounds.height - cornerSize / 2, cornerSize, cornerSize);
         }
     });
+
+    // Darkness last, so it dims the world and nothing else. Because drawWorld
+    // already takes its camera and viewport as arguments (contract 3), the
+    // picture-in-picture inset gets darkness for free.
+    drawDarkness(ctx, camX, camY, viewW, viewH);
 }
 
 // Fallback camera, used only when coop.js has not defined updateCoopCamera:
@@ -4842,9 +5396,12 @@ function gameLoop(timestamp) {
     }
     const phaseChanged = game.dayNight.phase !== prevPhase;
 
+    updateTimedBuffs();
+
     // Auto-save periodically
     if (now - lastAutoSave > AUTO_SAVE_INTERVAL) {
         saveGame();
+        game.saveDirty = false;
         lastAutoSave = Date.now();
     }
 
@@ -5280,8 +5837,8 @@ canvas.addEventListener('mousedown', (e) => {
         const tile = game.placedTiles[index];
         game.placedTiles.splice(index, 1);
         // Return material to inventory
-        if (tile.materialType && game.inventory[tile.materialType] !== undefined) {
-            game.inventory[tile.materialType]++;
+        if (tile.materialName && game.inventory[tile.materialName] !== undefined) {
+            game.inventory[tile.materialName]++;
         }
         saveGame();
     }

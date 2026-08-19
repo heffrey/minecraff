@@ -147,9 +147,15 @@ game.tech = {
     open: false,                      // panel visible
     tab: 'tech',                      // 'tech' | 'workshop'
     selected: null,                   // hovered/selected node or recipe id
-    crafted: {}                       // recipeId -> count
+    crafted: {},                      // recipeId -> charges on hand
+    pickTier: null,                   // 'stone' | 'iron' | null -- pick in use
+    toolBlocks: 0,                    // blocks left on the active pick
+    plating: 0                        // iron_ingot uses, capped at 3
 }
 ```
+
+`game.torches` and `game.waypoints` (both arrays of `{x, y}` world coords) are
+also owned by `game.js` and written by the workshop.
 
 ### Functions defined by `techtree.js`
 | Function | Called from | Purpose |
@@ -158,15 +164,44 @@ game.tech = {
 | `techPanelKey(key)` | `keydown` | returns `true` if the panel consumed the key |
 | `techPanelClick(mx, my)` | canvas `click` | returns `true` if the panel consumed the click |
 | `hasTech(id)` | anywhere | `game.tech.unlocked.has(id)` |
+| `useSelectedCraft()` | `keydown` (`C`) | spend one charge of the selected recipe |
+
+### Functions defined by `game.js`, called from `techtree.js`
+
+These are the only calls that go the other way. Each is invoked through a
+`typeof x === 'function'` guard so the panel still works if `game.js` is older
+than the module.
+
+| Function | Called from | Purpose |
+|---|---|---|
+| `onTechUnlocked(id)` | `attemptResearch` | push newly-unlocked effects onto both characters |
+| `applyCraftedEffect(id)` | `useSelectedCraft` | do the work of a spent charge; returns a **string to refuse** (charge kept) or truthy on success |
+| `craftYield()` | `attemptCraft` | 1, or 2 once `pottery` is researched |
+| `engageBestPick()` | `attemptCraft` | put a freshly crafted pick to work if none is in use |
 
 `T` toggles the panel, `Tab` switches tabs, `Escape` closes.
 While the panel is open it swallows keys so player movement is not triggered.
+`C` spends a charge and deliberately works with the panel **shut**, so you can
+drop a torch or throw up a wall mid-fight. It is bound in neither hemisphere,
+the same reasoning that put the seat swap on Backspace.
 
 ## 6. Save / load
 
-`saveGame()` serialises `tech: [...game.tech.unlocked]`, `crafted`,
-`controlAssignment`, plus a `players` array of `{x, y, hp}`. `loadGame()` restores them defensively — a save
-written before co-op existed has none of these keys and must still load.
+`saveGame()` writes `version: 3` and serialises `tech: [...game.tech.unlocked]`,
+`crafted`, `pickTier`, `toolBlocks`, `plating`, `torches`, `waypoints`,
+`controlAssignment`, plus a `players` array of `{x, y, hp}`. `loadGame()`
+restores each under its own independent guard — a v2 save (or one written before
+co-op existed) has none of these keys and must still load.
+
+**Timed buffs are deliberately not persisted.** A `Date.now()` deadline written
+before a reload is meaningless after it, and reloading should not hand out a
+free 45 s of Snow Boots. Same reasoning that already keeps `dayNight` out of the
+save.
+
+**`applyTechToCharacters()` must run between the `tech` block and the `players`
+block.** The players block clamps `hp` against `maxHp`; if the tech effects have
+not been applied yet, `maxHp` is still the constructor's 20 and a 40 HP save
+silently loads as 20.
 
 ## 7. Defensive calls
 

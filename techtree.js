@@ -2,7 +2,11 @@
 //
 // Loaded after game.js (see docs/coop-contract.md §5). Everything here is
 // file-local except the four contract globals at the bottom:
-//   drawTechPanel(ctx), techPanelKey(key), techPanelClick(mx, my), hasTech(id)
+//   drawTechPanel(ctx), techPanelKey(key), techPanelClick(mx, my), hasTech(id),
+//   useSelectedCraft()
+//
+// and one that goes the other way -- game.js defines it, this file calls it:
+//   onTechUnlocked(id), applyCraftedEffect(id), craftYield(), engageBestPick()
 //
 // The whole file is wrapped in an IIFE so the node tables, layout maths and
 // feedback state cannot collide with game.js's globals — this project has no
@@ -19,120 +23,126 @@
     // tier, which is what keeps the graph acyclic and also what makes the
     // column layout readable (every edge points rightwards, never backwards).
     //
-    // Costs assume the real gather rate: 1 wood per felled tree, 1 material
-    // per dug block. Tier 1 is a few minutes of play; tier 4 is a project.
-    // `effect` is a placeholder flag today — unlocking sets it, nothing reads
-    // it yet — but the dependency graph, the costs and the spend are real.
+    // `effect` is the contract between this table and game.js: unlocking a
+    // node calls onTechUnlocked(), and game.js reads hasTech(<id>) at the call
+    // site for the stat it changes. See "Tech tree effects" in game.js for the
+    // helper layer and docs/superpowers/specs/2026-08-19-techtree-effects-design.md
+    // for the reasoning behind every number.
+    //
+    // Costs are gates, not prices. A held sideways dig is an unlimited tap on
+    // whatever material sits at that depth (~200/minute), so what actually
+    // paces the tree is which BIOME a material lives in, how DEEP it is, and
+    // whether you can survive being down there — not the number below.
 
     const TECH_NODES = [
         {
             id: 'survival', name: 'Survival', tier: 0, requires: [], cost: {},
             blurb: 'You woke up in a blocky world with empty pockets. Everything starts here.',
-            effect: 'baseline'
+            effect: 'baseline', effectText: 'Nothing. Everything starts here.'
         },
 
         // Tier 1 — turning raw stuff into usable stuff.
         {
             id: 'woodcraft', name: 'Woodcraft', tier: 1, requires: ['survival'],
-            cost: { wood: 8 },
+            cost: { wood: 6 },
             blurb: 'Split logs into planks so they stop being logs.',
-            effect: 'plank_recipes'
+            effect: 'plank_recipes', effectText: 'Trees fall in 2 hits and drop 2 wood.'
         },
         {
             id: 'stonework', name: 'Stonework', tier: 1, requires: ['survival'],
-            cost: { stone: 8, wood: 2 },
+            cost: { stone: 10, wood: 2 },
             blurb: 'Knap stone into shapes that hold an edge.',
-            effect: 'stone_recipes'
+            effect: 'stone_recipes', effectText: 'Attack 5 -> 8 damage, misses 25% -> 18%.'
         },
         {
             id: 'earthworks', name: 'Earthworks', tier: 1, requires: ['survival'],
-            cost: { dirt: 12 },
+            cost: { dirt: 15 },
             blurb: 'Move dirt on purpose instead of by accident.',
-            effect: 'faster_dirt_digging'
+            effect: 'faster_dirt_digging', effectText: 'Dirt, sand, snow and clay dig 33% faster.'
         },
         {
             id: 'foraging', name: 'Foraging', tier: 1, requires: ['survival'],
-            cost: { wood: 4, sand: 4 },
+            cost: { wood: 6, dirt: 10 },
             blurb: 'Spot what the surface gives away for free.',
-            effect: 'surface_yield_bonus'
+            effect: 'surface_yield_bonus', effectText: 'Surface blocks (depth 0) drop double.'
         },
 
         // Tier 2 — heat, tools and light.
         {
             id: 'toolsmithing', name: 'Tool Smithing', tier: 2,
-            requires: ['woodcraft', 'stonework'], cost: { wood: 12, stone: 16 },
+            requires: ['woodcraft', 'stonework'], cost: { wood: 14, stone: 20 },
             blurb: 'Haft a stone head to a wooden handle. Digging gets serious.',
-            effect: 'tool_recipes'
+            effect: 'tool_recipes', effectText: 'All digging 27% faster, all chopping 30% faster.'
         },
         {
             id: 'kiln', name: 'Clay Kiln', tier: 2, requires: ['earthworks'],
-            cost: { clay: 12, stone: 8 },
+            cost: { clay: 10, stone: 15 },
             blurb: 'A stone box hot enough to turn mud into pottery.',
-            effect: 'fired_clay'
+            effect: 'fired_clay', effectText: 'Any block, any depth: 20% chance of bonus clay.'
         },
         {
             id: 'torches', name: 'Torches', tier: 2,
-            requires: ['woodcraft', 'foraging'], cost: { wood: 10, sand: 6 },
+            requires: ['woodcraft', 'foraging'], cost: { wood: 12, sand: 8 },
             blurb: 'Carry your own daylight down the shaft.',
-            effect: 'light_source'
+            effect: 'light_source', effectText: 'Carried light 90 -> 190px. Unlocks world torches.'
         },
         {
             id: 'smelting', name: 'Smelting', tier: 2, requires: ['stonework'],
-            cost: { stone: 20, clay: 6 },
+            cost: { stone: 25, iron: 4 },
             blurb: 'Cook ore until the metal runs out of the rock.',
-            effect: 'ore_to_ingot'
+            effect: 'ore_to_ingot', effectText: 'Iron and silver drop 3 per block instead of 1.'
         },
 
         // Tier 3 — iron, depth and craftsmanship.
         {
             id: 'ironworking', name: 'Iron Working', tier: 3,
-            requires: ['smelting'], cost: { iron: 10, stone: 12 },
+            requires: ['smelting'], cost: { iron: 18, stone: 20 },
             blurb: 'Beat hot iron flat. Everything after this is made of it.',
-            effect: 'iron_recipes'
+            effect: 'iron_recipes', effectText: 'Max HP 20 -> 30, attack -> 12, regen 2x.'
         },
         {
             id: 'deepshafts', name: 'Deep Shafts', tier: 3,
-            requires: ['toolsmithing', 'torches'], cost: { wood: 20, stone: 24 },
+            requires: ['toolsmithing', 'torches'], cost: { wood: 24, stone: 30, iron: 6 },
             blurb: 'Timbered tunnels that do not fall in on you.',
-            effect: 'deeper_dig_limit'
+            effect: 'deeper_dig_limit', effectText: 'Dig 50 -> 90 layers. Jump higher to climb out.'
         },
         {
             id: 'pottery', name: 'Pottery', tier: 3, requires: ['kiln'],
-            cost: { clay: 20, sand: 10 },
+            cost: { clay: 24, sand: 12 },
             blurb: 'Pots, jars and tiles. Storage that does not leak.',
-            effect: 'storage_recipes'
+            effect: 'storage_recipes', effectText: 'Every craft yields 2 charges. Clay digs +1.'
         },
         {
             id: 'lanterns', name: 'Lanterns', tier: 3,
-            requires: ['torches', 'smelting'], cost: { iron: 6, sand: 12 },
+            requires: ['torches', 'smelting'], cost: { iron: 12, sand: 16 },
             blurb: 'Glass and metal beat a stick that burns out.',
-            effect: 'lasting_light'
+            effect: 'lasting_light', effectText: 'Carried light -> 300px, and it stops guttering.'
         },
 
         // Tier 4 — the luxuries you dig a very long way for.
         {
             id: 'minecarts', name: 'Mine Carts', tier: 4,
-            requires: ['ironworking', 'deepshafts'], cost: { iron: 24, wood: 30 },
+            requires: ['ironworking', 'deepshafts'], cost: { iron: 30, wood: 24 },
             blurb: 'Rails down the shaft so the ore rides home instead of you.',
-            effect: 'rail_travel'
+            effect: 'rail_travel', effectText: 'Move 40% faster (120 -> 168 px/s).'
         },
         {
             id: 'goldsmithing', name: 'Gold Smithing', tier: 4,
-            requires: ['ironworking', 'pottery'], cost: { gold: 8, clay: 10 },
+            requires: ['ironworking', 'pottery'], cost: { gold: 10, clay: 16 },
             blurb: 'Soft, useless, gorgeous. Worth every block you dug.',
-            effect: 'gold_recipes'
+            effect: 'gold_recipes', effectText: 'Gold appears deep in the cave. Gold tiles ward off the night.'
         },
         {
             id: 'silverwork', name: 'Silver Work', tier: 4,
-            requires: ['ironworking', 'lanterns'], cost: { silver: 10, iron: 8 },
+            requires: ['ironworking', 'lanterns'], cost: { silver: 20, iron: 12 },
             blurb: 'Bright metal for mirrors, wire and show-off gear.',
-            effect: 'silver_recipes'
+            effect: 'silver_recipes', effectText: 'Minimap sees 2.5x further.'
         },
         {
             id: 'frostgear', name: 'Frost Gear', tier: 4,
-            requires: ['deepshafts', 'lanterns'], cost: { snow: 20, iron: 10, silver: 4 },
+            requires: ['deepshafts', 'lanterns'], cost: { snow: 24, iron: 16, silver: 8 },
             blurb: 'Lined boots and lamps that keep burning in the snow biome.',
-            effect: 'cold_resistance'
+            effect: 'cold_resistance', effectText: 'Max HP -> 40, regen 2 HP/s starting 1.2s after a hit.'
         }
     ];
 
@@ -141,78 +151,87 @@
     // ---------------------------------------------------------------------
     //
     // A recipe is craftable when its `requiresTech` node is unlocked AND the
-    // shared inventory covers the cost. `yields` is a placeholder item name:
-    // crafting pushes it into `game.inventory.items` and bumps
-    // `game.tech.crafted[id]`. drawInventory() in game.js only ever walks the
-    // nine named material counters and never touches `items`, so adding
-    // strings there cannot break the HUD, and saveGame() JSON-serialises the
-    // whole inventory object without special-casing, so strings persist.
+    // shared inventory covers the cost.
+    //
+    // `game.tech.crafted[id]` is a CHARGE COUNT, not a trophy shelf. Press C to
+    // spend one charge of the selected recipe; game.js's applyCraftedEffect()
+    // does the actual work. Charges already persist through saveGame().
+    //
+    // Why a workshop at all, when the tech tree could just absorb these: a tree
+    // of permanent passives has no repeatable sink. Once all 17 nodes are
+    // researched, materials would be worthless again and the game would be back
+    // to a 200/minute faucet pouring into a bucket with no hole. Consumables
+    // are what keep gathering worth doing for the rest of the session.
+    //
+    // Hard rule: no recipe may yield as much convertible material as it costs.
+    // Every placeable below costs more than the tiles it drops would refund, or
+    // it would be an infinite loop.
 
     const WORKSHOP_RECIPES = [
         {
             id: 'plank_bundle', name: 'Plank Bundle', requiresTech: 'woodcraft',
             cost: { wood: 4 }, yields: 'Plank Bundle',
-            blurb: 'Four logs, one tidy stack of planks.'
+            blurb: 'C: drops a 3-tall wood column under you. Climb out of your own shaft.'
         },
         {
             id: 'cut_stone', name: 'Cut Stone', requiresTech: 'stonework',
             cost: { stone: 4 }, yields: 'Cut Stone',
-            blurb: 'Squared-off blocks that stack without wobbling.'
+            blurb: 'C: raises a 3-tall stone wall in front of you. Mobs stop at it.'
         },
         {
             id: 'dirt_ramp', name: 'Dirt Ramp', requiresTech: 'earthworks',
             cost: { dirt: 6 }, yields: 'Dirt Ramp',
-            blurb: 'A packed slope for walking out of your own hole.'
+            blurb: 'C: lays a rising staircase ahead. The only real dirt sink there is.'
         },
         {
             id: 'berry_basket', name: 'Berry Basket', requiresTech: 'foraging',
             cost: { wood: 2, sand: 2 }, yields: 'Berry Basket',
-            blurb: 'Woven basket. Holds more than your hands do.'
+            blurb: 'C: heals both players 8 HP on the spot.'
         },
         {
             id: 'stone_pick', name: 'Stone Pickaxe', requiresTech: 'toolsmithing',
             cost: { wood: 3, stone: 6 }, yields: 'Stone Pickaxe',
-            blurb: 'The first tool that beats punching rock.'
+            blurb: 'Digs 20% faster for 100 blocks. Engages itself when the last one wears out.'
         },
         {
             id: 'clay_pot', name: 'Clay Pot', requiresTech: 'kiln',
             cost: { clay: 6 }, yields: 'Clay Pot',
-            blurb: 'Fired until it rings when you tap it.'
+            blurb: 'C: drops a waypoint here. Rail Kit brings you back to it.'
         },
         {
             id: 'torch_bundle', name: 'Torch Bundle', requiresTech: 'torches',
             cost: { wood: 4, sand: 2 }, yields: 'Torch Bundle',
-            blurb: 'Six torches. Take them all; the dark is long.'
+            blurb: 'C: plants a torch here. Permanent light, and it never goes out.'
         },
         {
             id: 'iron_ingot', name: 'Iron Ingot', requiresTech: 'smelting',
-            cost: { iron: 3, stone: 2 }, yields: 'Iron Ingot',
-            blurb: 'Raw ore cooked down into one honest bar.'
+            cost: { iron: 8, stone: 6 }, yields: 'Iron Ingot',
+            blurb: 'C: plates both players. +5 max HP, permanent, three bars maximum.'
         },
         {
             id: 'iron_pick', name: 'Iron Pickaxe', requiresTech: 'ironworking',
-            cost: { iron: 6, wood: 3 }, yields: 'Iron Pickaxe',
-            blurb: 'Bites stone like the stone owes it money.'
+            cost: { iron: 10, wood: 4 }, yields: 'Iron Pickaxe',
+            blurb: 'Digs 40% faster for 100 blocks. Beats a stone pick to the punch.'
         },
         {
             id: 'rail_kit', name: 'Rail Kit', requiresTech: 'minecarts',
             cost: { iron: 8, wood: 6 }, yields: 'Rail Kit',
-            blurb: 'Sixteen lengths of track and the spikes to lay them.'
+            blurb: 'C: rides both players back to the last waypoint.'
         },
         {
             id: 'gold_lamp', name: 'Gold Lamp', requiresTech: 'goldsmithing',
-            cost: { gold: 4, iron: 2 }, yields: 'Gold Lamp',
-            blurb: 'Entirely unnecessary. Absolutely worth it.'
+            cost: { gold: 6, iron: 4 }, yields: 'Gold Lamp',
+            blurb: 'C: sets a gold ward here. It lights the dark and the night keeps away.'
         },
         {
             id: 'silver_mirror', name: 'Silver Mirror', requiresTech: 'silverwork',
             cost: { silver: 4, sand: 4 }, yields: 'Silver Mirror',
-            blurb: 'Polished silver on glass. See who is behind you.'
+            blurb: 'C: shows every mob on the minimap for 60 seconds.'
         },
         {
             id: 'snow_boots', name: 'Snow Boots', requiresTech: 'frostgear',
             cost: { snow: 8, silver: 2 }, yields: 'Snow Boots',
-            blurb: 'Lined, buckled and immune to the snow biome.'
+            blurb: 'C: +40% move speed for 45 seconds, both players.'
         }
     ];
 
@@ -422,6 +441,7 @@
             return false;
         }
         tech().unlocked.add(id);
+        if (typeof onTechUnlocked === 'function') onTechUnlocked(id);
         say('Researched ' + node.name + '!', 'good');
         celebrate(node.name + '!');
         return true;
@@ -445,10 +465,52 @@
             return false;
         }
         const t = tech();
-        t.crafted[id] = (t.crafted[id] || 0) + 1;
-        const inv = inventory();
-        if (inv) inv.items.push(recipe.yields);
-        say('Crafted ' + recipe.name + '!', 'good');
+        const made = (typeof craftYield === 'function') ? craftYield() : 1;
+        t.crafted[id] = (t.crafted[id] || 0) + made;
+        // A pick sitting in the box does nothing; engage it if none is in use.
+        if (typeof engageBestPick === 'function') engageBestPick();
+        say('Crafted ' + recipe.name + (made > 1 ? ' x' + made : '') + '!', 'good');
+        celebrate(recipe.name + '!');
+        return true;
+    }
+
+    // Spend one charge of the selected recipe. Bound to C, and deliberately
+    // works with the panel shut so you can drop a torch or a wall mid-fight.
+    function useSelectedCraft() {
+        const t = tech();
+        if (!t) return false;
+        const id = recipeSelected;
+        const recipe = RECIPES_BY_ID[id];
+        if (!recipe) return false;
+
+        if (!isUnlocked(recipe.requiresTech)) {
+            const req = NODES_BY_ID[recipe.requiresTech];
+            say('Requires ' + (req ? req.name : recipe.requiresTech), 'bad');
+            return false;
+        }
+        // Picks are not spent by hand -- they engage themselves and burn down
+        // per dug block, so a C press here would silently destroy one.
+        if (id === 'stone_pick' || id === 'iron_pick') {
+            say(recipe.name + ' engages automatically while you dig', 'good');
+            return false;
+        }
+        if (!(t.crafted[id] > 0)) {
+            say('No ' + recipe.name + ' on hand — craft one first', 'bad');
+            return false;
+        }
+        if (typeof applyCraftedEffect !== 'function') {
+            say('Nothing to use it on', 'bad');
+            return false;
+        }
+        // game.js returns a string to refuse with (no waypoint set, plating
+        // already capped) so the reason reaches the player instead of a no-op.
+        const refusal = applyCraftedEffect(id);
+        if (typeof refusal === 'string') {
+            say(refusal, 'bad');
+            return false;
+        }
+        t.crafted[id]--;
+        say('Used ' + recipe.name, 'good');
         celebrate(recipe.name + '!');
         return true;
     }
@@ -954,7 +1016,7 @@
         drawDetail(ctx, L,
             'TIER ' + node.tier + '  —  ' + node.name,
             node.blurb,
-            'Cost: ' + costText(node.cost) + '   Effect: ' + node.effect + ' (coming soon)',
+            'Cost: ' + costText(node.cost) + '   Effect: ' + (node.effectText || node.effect),
             stateLine,
             state === 'unlocked' ? '' : 'ENTER to research');
     }
@@ -1015,13 +1077,31 @@
         else if (state === 'poor') stateLine = shortfallText(shortfalls(recipe.cost));
         else stateLine = 'Ready to craft.';
 
+        const t = tech();
+        const held = (t && t.crafted[recipe.id]) || 0;
+        const isPick = recipe.id === 'stone_pick' || recipe.id === 'iron_pick';
+
+        // Picks burn down per dug block rather than being spent by hand, so show
+        // the wear on the one actually in use instead of a "press C" hint.
+        let useHint;
+        if (state === 'blocked') useHint = '';
+        else if (isPick) {
+            useHint = (t && t.pickTier && t.toolBlocks > 0)
+                ? 'ENTER to craft   ·   ' + t.pickTier + ' pick: ' + t.toolBlocks + ' blocks left'
+                : 'ENTER to craft   ·   engages itself while you dig';
+        } else {
+            useHint = held > 0
+                ? 'ENTER to craft   ·   C to use (' + held + ' on hand)'
+                : 'ENTER to craft';
+        }
+
         drawDetail(ctx, L,
             recipe.name + '  →  ' + recipe.yields,
             recipe.blurb,
             'Cost: ' + costText(recipe.cost) + '   Needs: ' +
                 (reqNode ? reqNode.name : recipe.requiresTech),
             stateLine,
-            state === 'blocked' ? '' : 'ENTER to craft');
+            useHint);
     }
 
     // ---------------------------------------------------------------------
@@ -1268,6 +1348,7 @@
     root.techPanelKey = techPanelKeyImpl;
     root.techPanelClick = techPanelClickImpl;
     root.hasTech = hasTechImpl;
+    root.useSelectedCraft = useSelectedCraft;
 
     // Exposed for the test harness / console poking only; game.js never reads it.
     root.__TECHTREE__ = {

@@ -181,6 +181,18 @@
     // ---- Span ---------------------------------------------------------------
     // Both player markers must ALWAYS be inside the frame: when the players
     // split up, the strip is the only thing telling them how far apart they are.
+    // How much further than normal the map should see. silverwork is permanent;
+    // a Silver Mirror stacks over it for 60 s. Both only ever widen the span.
+    function spanBoost() {
+        let m = 1;
+        if (typeof hasTech === 'function' && hasTech('silverwork')) m = 2.5;
+        if (typeof game !== 'undefined' && game && game.buffs &&
+            Date.now() < game.buffs.revealUntil) {
+            m = Math.max(m, 5);
+        }
+        return m;
+    }
+
     function computeSpan(cv, chars) {
         let lo = Infinity;
         let hi = -Infinity;
@@ -204,7 +216,7 @@
 
         // The player extent may occupy at most (1 - 2 * MARGIN_FRAC) of the span.
         const usable = 1 - 2 * MARGIN_FRAC;
-        let span = Math.max((hi - lo) / usable, mustHi - mustLo, MIN_SPAN);
+        let span = Math.max((hi - lo) / usable, mustHi - mustLo, MIN_SPAN * spanBoost());
         span = Math.ceil(span / SPAN_QUANTUM) * SPAN_QUANTUM;
 
         // Start centred on everything that should be visible, then slide the
@@ -378,6 +390,26 @@
                 const hostile = mob.hostile && !mob.passive;
                 ctx.fillStyle = hostile ? '#ff4d4d' : '#ff9db1';
                 ctx.fillRect(toStripX(wx) - 1.5, surfaceY - 4, 3, 3);
+            }
+
+            // 6.5 Workshop markers ------------------------------------------------
+            // Torches you planted and waypoints you dropped, so a long tunnel is
+            // navigable from the map rather than from memory.
+            ctx.fillStyle = '#ffd54a';
+            for (const t of safeArray(game.torches)) {
+                if (!t || !inSpan(t.x)) continue;
+                ctx.fillRect(toStripX(t.x) - 1, surfaceY - 6, 2, 4);
+            }
+            ctx.fillStyle = '#8ce08c';
+            for (const w of safeArray(game.waypoints)) {
+                if (!w || !inSpan(w.x)) continue;
+                const wx = toStripX(w.x);
+                ctx.beginPath();
+                ctx.moveTo(wx, surfaceY - 9);
+                ctx.lineTo(wx + 3, surfaceY - 6);
+                ctx.lineTo(wx - 3, surfaceY - 6);
+                ctx.closePath();
+                ctx.fill();
             }
 
             // 7. Viewport rectangle ---------------------------------------------

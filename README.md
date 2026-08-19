@@ -18,13 +18,20 @@ right half, and either player can take either half.
   their distance, plus a column of light rising from where they are standing
 - **Minimap**: a strip across the bottom showing biomes, both players, the tunnels
   you have dug, and how far apart you are
-- **Tech Tree and Workshop**: research nodes with real material costs, and a
-  workshop for crafting (unlock effects are still placeholders)
+- **Tech Tree**: 17 nodes across 5 tiers, each with a real effect — faster
+  digging and chopping, bigger yields, more HP and damage, deeper shafts, light,
+  movement speed. Unlocks are shared and apply to both players
+- **Workshop**: 13 craftable items that stack as charges. Press **C** to spend
+  one: heal both players, plant a permanent torch, wall off a mob, ramp out of
+  your own hole, drop a waypoint and ride back to it later
+- **Darkness**: night and depth both dim the world, and the cave is genuinely
+  dark. Torches and Lanterns widen the light you carry; a Gold Lamp plants a
+  ward that lights its patch and keeps night spawns away
 - **Day/Night Cycle**: 10-minute full cycle — DAY, EVENING, NIGHT, DAWN — with phase-based sky colors, stars, and a moon
 - **Night Enemies**: Zombies, skeletons, and creepers spawn at night and burn at dawn
 - **Biomes**: Grassland, Sand, Swamp (slimes at evening), Cave (spiders, always hostile), Snow
 - **Tree Chopping**: Chop trees to collect wood (hold E near a tree)
-- **Ground Digging**: Dig down up to 50 layers to collect materials (dirt, stone, iron, etc.). Hold E to dig continuously. Colors darken with depth
+- **Ground Digging**: Dig down up to 50 layers (90 with Deep Shafts) to collect materials (dirt, stone, iron, etc.). Hold E to dig continuously. Colors darken with depth
 - **Directional Digging**: While underground, press E + arrow keys (left/right/down) to dig in that direction
 - **Material Placement**: Place blocks (wood, dirt, stone, clay, gold, iron, silver) by opening the palette (P), selecting a material (1–9), and clicking
 - **Tile Destruction**: Right-click a placed tile to remove it and return the material to inventory
@@ -72,7 +79,8 @@ skips the attack and chop checks entirely.
 - **Act + right**: tunnel right at the current depth
 - **Act + up** does *not* dig — up is reserved for jumping
 
-Hold the keys; digging is continuous at ~300ms per block, down to 50 layers.
+Hold the keys; digging is continuous at ~300ms per block (faster with Earthworks,
+Tool Smithing or a pickaxe), down to 50 layers — 90 once Deep Shafts is researched.
 
 Digging stops if you walk to another tile, a mob comes into range, or you release
 your action key.
@@ -92,7 +100,11 @@ other across the terrain.
 ### General (shared, either player)
 - **I**: Toggle inventory display
 - **M**: Toggle the minimap
-- **T**: Open the tech tree / workshop (**Tab** switches tabs, **Esc** closes)
+- **T**: Open the tech tree / workshop (**Tab** switches tabs, **Esc** closes).
+  Arrows move the selection, **Enter** researches or crafts
+- **C**: Spend one charge of the selected workshop item. Works with the panel
+  closed, so you can drop a torch or throw up a wall mid-fight. Pickaxes are the
+  exception — they engage themselves and wear down per block dug
 - **P**: Open/close material palette
 - **1–9**: Select material (when palette open)
 - **Left-click**: Place selected material
